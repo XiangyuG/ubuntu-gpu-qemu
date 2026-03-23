@@ -16,5 +16,13 @@ nohup.out
 # QEMU build artifacts
 qemu/build/
 
+# Local build artifacts
+lib/compiledd/compiledd
+lib/libtmatmulrt/*.o
+lib/libtmatmulrt/*.so
+test/rvt2_test
+test/rvt2_bench
+test/rvt2_cxl_test
+
 # Humanize local loop state
 .humanize/rlcr/

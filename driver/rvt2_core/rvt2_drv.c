@@ -7,6 +7,7 @@
 #include <linux/pci.h>
 #include <linux/fs.h>
 #include <linux/uaccess.h>
+#include <linux/poll.h>
 #include "rvt2_drv.h"
 
 static int debug_level;
@@ -58,7 +59,7 @@ static unsigned int rvt2_poll(struct file *filp, struct poll_table_struct *wait)
     poll_wait(filp, &rdev->fence_wq, wait);
 
     if (rdev->last_completed_seqno >= rdev->next_seqno - 1)
-        mask |= POLLIN | POLLRDNORM;
+        mask |= EPOLLIN | EPOLLRDNORM;
 
     return mask;
 }
@@ -180,24 +181,35 @@ static int rvt2_probe(struct pci_dev *pdev, const struct pci_device_id *id)
     pci_set_drvdata(pdev, rdev);
 
     ret = pcim_enable_device(pdev);
-    if (ret)
+    if (ret) {
+        dev_err(&pdev->dev, "pcim_enable_device failed: %d\n", ret);
         return ret;
+    }
 
     pci_set_master(pdev);
 
     ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
     if (ret) {
         ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
-        if (ret)
+        if (ret) {
+            dev_err(&pdev->dev, "dma_set_mask failed: %d\n", ret);
             return ret;
+        }
     }
 
-    rdev->mmio = pcim_iomap(pdev, 0, 0);
+    ret = pcim_iomap_regions(pdev, BIT(0), "rvt2_core");
+    if (ret) {
+        dev_err(&pdev->dev, "pcim_iomap_regions failed: %d\n", ret);
+        return ret;
+    }
+
+    rdev->mmio = pcim_iomap_table(pdev)[0];
     if (!rdev->mmio)
         return -ENOMEM;
 
     /* Verify device identity */
     dev_id = rvt2_read(rdev, RVT2_REG_ID);
+    dev_info(&pdev->dev, "device ID register: 0x%08x\n", dev_id);
     if (dev_id != 0x52565432) {
         dev_err(&pdev->dev, "unexpected device ID: 0x%08x\n", dev_id);
         return -ENODEV;
@@ -212,16 +224,22 @@ static int rvt2_probe(struct pci_dev *pdev, const struct pci_device_id *id)
     rvt2_submit_init(rdev);
 
     ret = rvt2_irq_init(rdev);
-    if (ret)
+    if (ret) {
+        dev_err(&pdev->dev, "rvt2_irq_init failed: %d\n", ret);
         return ret;
+    }
 
     ret = rvt2_fw_init(rdev);
-    if (ret)
+    if (ret) {
+        dev_err(&pdev->dev, "rvt2_fw_init failed: %d\n", ret);
         goto err_irq;
+    }
 
     ret = rvt2_queue_init(rdev);
-    if (ret)
+    if (ret) {
+        dev_err(&pdev->dev, "rvt2_queue_init failed: %d\n", ret);
         goto err_irq;
+    }
 
     /* Register char device */
     rdev->miscdev.minor = MISC_DYNAMIC_MINOR;

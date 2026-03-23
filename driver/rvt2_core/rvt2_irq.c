@@ -25,9 +25,14 @@ int rvt2_irq_init(struct rvt2_device *rdev)
 {
     int ret, nvec;
 
-    nvec = pci_alloc_irq_vectors(rdev->pdev, 1, 2, PCI_IRQ_MSIX | PCI_IRQ_MSI);
-    if (nvec < 0)
+    nvec = pci_alloc_irq_vectors(rdev->pdev, 1, 2,
+                                 PCI_IRQ_MSIX | PCI_IRQ_MSI | PCI_IRQ_INTX);
+    if (nvec < 0) {
+        dev_err(&rdev->pdev->dev,
+                "pci_alloc_irq_vectors failed: %d\n", nvec);
         return nvec;
+    }
+    dev_info(&rdev->pdev->dev, "allocated %d IRQ vectors\n", nvec);
 
     ret = request_irq(pci_irq_vector(rdev->pdev, 0), rvt2_irq_handler,
                       0, "rvt2_completion", rdev);

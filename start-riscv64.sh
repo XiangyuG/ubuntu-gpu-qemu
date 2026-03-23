@@ -18,7 +18,7 @@ if [ ! -x "${QEMU_BIN}" ]; then
 fi
 
 "${QEMU_BIN}" \
-    -machine virt \
+    -machine virt,aia=aplic-imsic \
     -cpu rv64 \
     -m 8G \
     -smp 4 \
