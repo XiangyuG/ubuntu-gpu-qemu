@@ -2,12 +2,42 @@
 #include <linux/uaccess.h>
 #include <linux/sched.h>
 #include <linux/poll.h>
+#include <linux/slab.h>
 #include "rvt2_drv.h"
 
 void rvt2_submit_init(struct rvt2_device *rdev)
 {
     rdev->next_seqno = 1;
     rdev->last_completed_seqno = 0;
+    INIT_LIST_HEAD(&rdev->fences);
+}
+
+static struct rvt2_fence_state *rvt2_find_fence_locked(struct rvt2_device *rdev,
+                                                       u64 seqno)
+{
+    struct rvt2_fence_state *fence;
+
+    list_for_each_entry(fence, &rdev->fences, node) {
+        if (fence->seqno == seqno)
+            return fence;
+    }
+
+    return NULL;
+}
+
+static void rvt2_complete_fence(struct rvt2_device *rdev, u64 seqno, u32 status)
+{
+    struct rvt2_fence_state *fence;
+
+    spin_lock(&rdev->fence_lock);
+    fence = rvt2_find_fence_locked(rdev, seqno);
+    if (fence) {
+        fence->hw_status = status;
+        fence->completed = true;
+    }
+    if (status == 0 && seqno > rdev->last_completed_seqno)
+        rdev->last_completed_seqno = seqno;
+    spin_unlock(&rdev->fence_lock);
 }
 
 static void rvt2_harvest_completions(struct rvt2_device *rdev)
@@ -22,11 +52,7 @@ static void rvt2_harvest_completions(struct rvt2_device *rdev)
         } *cpl;
 
         cpl = rdev->cplq_cpu + (rdev->cplq_head % RVT2_CPLQ_ENTRIES) * RVT2_CPL_SIZE;
-
-        spin_lock(&rdev->fence_lock);
-        if (cpl->fence_seqno > rdev->last_completed_seqno)
-            rdev->last_completed_seqno = cpl->fence_seqno;
-        spin_unlock(&rdev->fence_lock);
+        rvt2_complete_fence(rdev, cpl->fence_seqno, cpl->status);
 
         rdev->cplq_head = (rdev->cplq_head + 1) % RVT2_CPLQ_ENTRIES;
     }
@@ -35,10 +61,30 @@ static void rvt2_harvest_completions(struct rvt2_device *rdev)
     wake_up_all(&rdev->fence_wq);
 }
 
+bool rvt2_poll_ready(struct rvt2_device *rdev)
+{
+    struct rvt2_fence_state *fence;
+    bool ready = false;
+
+    rvt2_harvest_completions(rdev);
+
+    spin_lock(&rdev->fence_lock);
+    list_for_each_entry(fence, &rdev->fences, node) {
+        if (fence->completed) {
+            ready = true;
+            break;
+        }
+    }
+    spin_unlock(&rdev->fence_lock);
+
+    return ready;
+}
+
 int rvt2_submit_ioctl(struct rvt2_device *rdev, void __user *arg)
 {
     struct rvt2_submit req;
     struct rvt2_bo *bo_a, *bo_b, *bo_c, *bo_d;
+    struct rvt2_fence_state *fence;
     struct rvt2_descriptor *desc;
     u64 seqno;
     u32 status;
@@ -73,9 +119,20 @@ int rvt2_submit_ioctl(struct rvt2_device *rdev, void __user *arg)
         return -EINVAL;
     }
 
+    fence = kzalloc(sizeof(*fence), GFP_KERNEL);
+    if (!fence) {
+        rvt2_bo_put(bo_a);
+        rvt2_bo_put(bo_b);
+        rvt2_bo_put(bo_c);
+        rvt2_bo_put(bo_d);
+        return -ENOMEM;
+    }
+
     /* Assign fence seqno */
     spin_lock(&rdev->fence_lock);
     seqno = rdev->next_seqno++;
+    fence->seqno = seqno;
+    list_add_tail(&fence->node, &rdev->fences);
     spin_unlock(&rdev->fence_lock);
 
     /* Write descriptor to command queue */
@@ -104,8 +161,13 @@ int rvt2_submit_ioctl(struct rvt2_device *rdev, void __user *arg)
     rvt2_bo_put(bo_d);
 
     req.fence_seqno = seqno;
-    if (copy_to_user(arg, &req, sizeof(req)))
+    if (copy_to_user(arg, &req, sizeof(req))) {
+        spin_lock(&rdev->fence_lock);
+        list_del(&fence->node);
+        spin_unlock(&rdev->fence_lock);
+        kfree(fence);
         return -EFAULT;
+    }
 
     return 0;
 }
@@ -113,8 +175,10 @@ int rvt2_submit_ioctl(struct rvt2_device *rdev, void __user *arg)
 int rvt2_wait_ioctl(struct rvt2_device *rdev, void __user *arg)
 {
     struct rvt2_wait req;
+    struct rvt2_fence_state *fence;
     long timeout_jiffies;
     long ret;
+    u32 hw_status = 0;
 
     if (copy_from_user(&req, arg, sizeof(req)))
         return -EFAULT;
@@ -125,10 +189,17 @@ int rvt2_wait_ioctl(struct rvt2_device *rdev, void __user *arg)
     /* Harvest any pending completions first */
     rvt2_harvest_completions(rdev);
 
-    if (rdev->last_completed_seqno >= req.fence_seqno) {
-        req.status = 0;
+    spin_lock(&rdev->fence_lock);
+    fence = rvt2_find_fence_locked(rdev, req.fence_seqno);
+    if (fence && fence->completed) {
+        hw_status = fence->hw_status;
+        list_del(&fence->node);
+        spin_unlock(&rdev->fence_lock);
+        kfree(fence);
+        req.status = hw_status ? 2 : 0;
         goto out;
     }
+    spin_unlock(&rdev->fence_lock);
 
     if (req.timeout_ns == 0) {
         req.status = 1; /* timeout */
@@ -143,7 +214,12 @@ int rvt2_wait_ioctl(struct rvt2_device *rdev, void __user *arg)
     ret = wait_event_interruptible_timeout(rdev->fence_wq,
         ({
             rvt2_harvest_completions(rdev);
-            rdev->last_completed_seqno >= req.fence_seqno;
+            bool done;
+            spin_lock(&rdev->fence_lock);
+            fence = rvt2_find_fence_locked(rdev, req.fence_seqno);
+            done = fence && fence->completed;
+            spin_unlock(&rdev->fence_lock);
+            done;
         }),
         timeout_jiffies);
 
@@ -152,7 +228,15 @@ int rvt2_wait_ioctl(struct rvt2_device *rdev, void __user *arg)
     } else if (ret < 0) {
         return -ERESTARTSYS;
     } else {
-        req.status = 0; /* signaled */
+        spin_lock(&rdev->fence_lock);
+        fence = rvt2_find_fence_locked(rdev, req.fence_seqno);
+        if (fence) {
+            hw_status = fence->hw_status;
+            list_del(&fence->node);
+        }
+        spin_unlock(&rdev->fence_lock);
+        kfree(fence);
+        req.status = hw_status ? 2 : 0;
     }
 
 out:

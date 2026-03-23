@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 CC ?= gcc
 CFLAGS := -Wall -Wextra -O2 -I../lib/libtmatmulrt -I../include/uapi
-LDFLAGS := -L../lib/libtmatmulrt -ltmatmulrt -lm -Wl,-rpath,../lib/libtmatmulrt
+LDFLAGS := -L../lib/libtmatmulrt -ltmatmulrt -lm -Wl,-rpath,'$$ORIGIN/../lib/libtmatmulrt'
 
 all: runtime compiledd rvt2_test rvt2_bench rvt2_cxl_test
 

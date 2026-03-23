@@ -1,7 +1,9 @@
 #!/bin/bash
 # Integration tests for compiledd
 
-COMPILEDD=../lib/compiledd/compiledd
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+COMPILEDD="$SCRIPT_DIR/../lib/compiledd/compiledd"
 PASS=0
 FAIL=0
 

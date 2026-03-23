@@ -58,7 +58,7 @@ static unsigned int rvt2_poll(struct file *filp, struct poll_table_struct *wait)
 
     poll_wait(filp, &rdev->fence_wq, wait);
 
-    if (rdev->last_completed_seqno >= rdev->next_seqno - 1)
+    if (rvt2_poll_ready(rdev))
         mask |= EPOLLIN | EPOLLRDNORM;
 
     return mask;
@@ -219,6 +219,7 @@ static int rvt2_probe(struct pci_dev *pdev, const struct pci_device_id *id)
     idr_init(&rdev->bo_idr);
     spin_lock_init(&rdev->fence_lock);
     init_waitqueue_head(&rdev->fence_wq);
+    INIT_LIST_HEAD(&rdev->fences);
     rdev->next_seqno = 1;
 
     rvt2_submit_init(rdev);

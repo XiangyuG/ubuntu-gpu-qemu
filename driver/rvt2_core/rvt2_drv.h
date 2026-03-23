@@ -11,6 +11,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/wait.h>
+#include <linux/list.h>
 #include "../../include/uapi/rvt2_drm.h"
 
 #define RVT2_PCI_VENDOR_ID      0x1234
@@ -70,6 +71,13 @@ struct rvt2_bo {
     dma_addr_t dma_addr;
 };
 
+struct rvt2_fence_state {
+    struct list_head node;
+    u64 seqno;
+    u32 hw_status;
+    bool completed;
+};
+
 struct rvt2_device {
     struct pci_dev *pdev;
     void __iomem *mmio;
@@ -94,6 +102,7 @@ struct rvt2_device {
     u64 last_completed_seqno;
     spinlock_t fence_lock;
     wait_queue_head_t fence_wq;
+    struct list_head fences;
 
     /* Firmware state */
     bool fw_ready;
@@ -125,6 +134,7 @@ void rvt2_bo_cleanup(struct rvt2_device *rdev);
 int rvt2_submit_ioctl(struct rvt2_device *rdev, void __user *arg);
 int rvt2_wait_ioctl(struct rvt2_device *rdev, void __user *arg);
 void rvt2_submit_init(struct rvt2_device *rdev);
+bool rvt2_poll_ready(struct rvt2_device *rdev);
 
 /* rvt2_irq.c */
 int rvt2_irq_init(struct rvt2_device *rdev);

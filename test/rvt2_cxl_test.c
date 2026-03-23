@@ -77,11 +77,13 @@ static int test_hdm_access(void)
 
 int main(void)
 {
+    int rc;
+
     printf("=== RVT2 CXL Type-2 HDM Test ===\n\n");
 
-    test_hdm_access();
+    rc = test_hdm_access();
 
     printf("\n=== Results: %d passed, %d failed ===\n",
            tests_passed, tests_failed);
-    return tests_failed ? 1 : 0;
+    return tests_failed || rc ? 1 : 0;
 }

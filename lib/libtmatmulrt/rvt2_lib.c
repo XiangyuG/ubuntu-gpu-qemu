@@ -128,5 +128,10 @@ int rvt2_wait(rvt2_dev_t *dev, uint64_t fence_seqno, int64_t timeout_ns)
     if (ret)
         return -errno;
 
-    return req.status ? -ETIMEDOUT : 0;
+    if (req.status == 1)
+        return -ETIMEDOUT;
+    if (req.status == 2)
+        return -EIO;
+
+    return 0;
 }

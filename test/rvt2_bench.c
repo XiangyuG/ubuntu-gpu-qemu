@@ -78,10 +78,12 @@ static int bench_matmul(int m, int n, int k)
 
 int main(void)
 {
+    int rc = 0;
+
     printf("=== RVT2 Benchmark ===\n");
-    bench_matmul(4, 4, 4);
-    bench_matmul(16, 16, 16);
-    bench_matmul(32, 32, 32);
-    bench_matmul(64, 64, 64);
-    return 0;
+    rc |= bench_matmul(4, 4, 4);
+    rc |= bench_matmul(16, 16, 16);
+    rc |= bench_matmul(32, 32, 32);
+    rc |= bench_matmul(64, 64, 64);
+    return rc ? 1 : 0;
 }

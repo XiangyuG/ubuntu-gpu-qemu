@@ -78,7 +78,7 @@ struct rvt2_submit {
 struct rvt2_wait {
     __u64 fence_seqno;      /* in: fence to wait for */
     __s64 timeout_ns;       /* in: timeout in nanoseconds (-1 = infinite) */
-    __u32 status;           /* out: 0 = signaled, 1 = timeout */
+    __u32 status;           /* out: 0 = signaled, 1 = timeout, 2 = device fault */
     __u32 pad;
 };
 
