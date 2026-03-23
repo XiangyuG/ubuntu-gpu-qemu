@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0
 obj-m := rvt2_gsp_shim.o
-rvt2_gsp_shim-objs := rvt2_gsp.o
+rvt2_gsp_shim-objs := rvt2_gsp.o rvt2_gsp_rpc.o
 
 KDIR ?= /lib/modules/$(shell uname -r)/build
 

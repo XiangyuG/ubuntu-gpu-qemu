@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <linux/uaccess.h>
 #include <linux/slab.h>
+#include <linux/mm.h>
 #include "rvt2_drv.h"
 
 static void rvt2_bo_release(struct kref *ref)
@@ -28,6 +29,27 @@ struct rvt2_bo *rvt2_bo_lookup(struct rvt2_device *rdev, u32 handle)
     mutex_unlock(&rdev->bo_lock);
     return bo;
 }
+
+static void rvt2_bo_vma_open(struct vm_area_struct *vma)
+{
+    struct rvt2_bo *bo = vma->vm_private_data;
+
+    if (bo)
+        kref_get(&bo->ref);
+}
+
+static void rvt2_bo_vma_close(struct vm_area_struct *vma)
+{
+    struct rvt2_bo *bo = vma->vm_private_data;
+
+    if (bo)
+        rvt2_bo_put(bo);
+}
+
+static const struct vm_operations_struct rvt2_bo_vm_ops = {
+    .open = rvt2_bo_vma_open,
+    .close = rvt2_bo_vma_close,
+};
 
 int rvt2_bo_create_ioctl(struct rvt2_device *rdev, void __user *arg)
 {
@@ -72,8 +94,13 @@ int rvt2_bo_create_ioctl(struct rvt2_device *rdev, void __user *arg)
 
     req.handle = bo->handle;
     req.dma_addr = bo->dma_addr;
-    if (copy_to_user(arg, &req, sizeof(req)))
+    if (copy_to_user(arg, &req, sizeof(req))) {
+        mutex_lock(&rdev->bo_lock);
+        idr_remove(&rdev->bo_idr, bo->handle);
+        mutex_unlock(&rdev->bo_lock);
+        rvt2_bo_put(bo);
         return -EFAULT;
+    }
 
     return 0;
 }
@@ -116,6 +143,7 @@ int rvt2_bo_destroy_ioctl(struct rvt2_device *rdev, void __user *arg)
         return -ENOENT;
     }
     idr_remove(&rdev->bo_idr, req.handle);
+    bo->destroyed = true;
     mutex_unlock(&rdev->bo_lock);
 
     rvt2_bo_put(bo);
@@ -131,6 +159,10 @@ int rvt2_bo_mmap(struct rvt2_device *rdev, struct vm_area_struct *vma)
     bo = rvt2_bo_lookup(rdev, handle);
     if (!bo)
         return -ENOENT;
+    if (bo->destroyed) {
+        rvt2_bo_put(bo);
+        return -ENODEV;
+    }
 
     if (vma->vm_end - vma->vm_start > bo->size) {
         rvt2_bo_put(bo);
@@ -138,8 +170,19 @@ int rvt2_bo_mmap(struct rvt2_device *rdev, struct vm_area_struct *vma)
     }
 
     vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+    vma->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
+    vma->vm_private_data = bo;
+    vma->vm_ops = &rvt2_bo_vm_ops;
     ret = dma_mmap_coherent(&rdev->pdev->dev, vma,
                             bo->cpu_addr, bo->dma_addr, bo->size);
+    if (ret) {
+        vma->vm_private_data = NULL;
+        vma->vm_ops = NULL;
+        rvt2_bo_put(bo);
+        return ret;
+    }
+
+    rvt2_bo_vma_open(vma);
     rvt2_bo_put(bo);
     return ret;
 }

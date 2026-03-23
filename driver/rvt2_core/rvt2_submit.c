@@ -87,6 +87,8 @@ int rvt2_submit_ioctl(struct rvt2_device *rdev, void __user *arg)
     struct rvt2_fence_state *fence;
     struct rvt2_descriptor *desc;
     u64 seqno;
+    u32 head;
+    u32 next_tail;
     u32 status;
 
     if (copy_from_user(&req, arg, sizeof(req)))
@@ -95,6 +97,8 @@ int rvt2_submit_ioctl(struct rvt2_device *rdev, void __user *arg)
     /* Validate device state */
     status = rvt2_read(rdev, RVT2_REG_STATUS);
     if (status & RVT2_STATUS_ERROR)
+        return -EIO;
+    if (!rdev->gsp.ready || !rdev->gsp.heartbeat_alive)
         return -EIO;
 
     bo_a = rvt2_bo_lookup(rdev, req.bo_a);
@@ -128,14 +132,25 @@ int rvt2_submit_ioctl(struct rvt2_device *rdev, void __user *arg)
         return -ENOMEM;
     }
 
-    /* Assign fence seqno */
+    mutex_lock(&rdev->submit_lock);
+    head = rvt2_read(rdev, RVT2_REG_CMDQ_HEAD) % RVT2_CMDQ_ENTRIES;
+    next_tail = (rdev->cmdq_tail + 1) % RVT2_CMDQ_ENTRIES;
+    if (next_tail == head) {
+        mutex_unlock(&rdev->submit_lock);
+        rvt2_bo_put(bo_a);
+        rvt2_bo_put(bo_b);
+        rvt2_bo_put(bo_c);
+        rvt2_bo_put(bo_d);
+        kfree(fence);
+        return -EBUSY;
+    }
+
     spin_lock(&rdev->fence_lock);
     seqno = rdev->next_seqno++;
     fence->seqno = seqno;
     list_add_tail(&fence->node, &rdev->fences);
     spin_unlock(&rdev->fence_lock);
 
-    /* Write descriptor to command queue */
     desc = rdev->cmdq_cpu + (rdev->cmdq_tail % RVT2_CMDQ_ENTRIES) * RVT2_DESC_SIZE;
     memset(desc, 0, RVT2_DESC_SIZE);
     desc->opcode = RVT2_OP_TERNARY_MATMUL;
@@ -150,10 +165,11 @@ int rvt2_submit_ioctl(struct rvt2_device *rdev, void __user *arg)
     desc->fence_seqno = seqno;
 
     /* Advance tail and ring doorbell */
-    rdev->cmdq_tail = (rdev->cmdq_tail + 1) % RVT2_CMDQ_ENTRIES;
+    rdev->cmdq_tail = next_tail;
     rvt2_write(rdev, RVT2_REG_CMDQ_TAIL, rdev->cmdq_tail);
     wmb();
     rvt2_write(rdev, RVT2_REG_DOORBELL, 1);
+    mutex_unlock(&rdev->submit_lock);
 
     rvt2_bo_put(bo_a);
     rvt2_bo_put(bo_b);
@@ -193,9 +209,7 @@ int rvt2_wait_ioctl(struct rvt2_device *rdev, void __user *arg)
     fence = rvt2_find_fence_locked(rdev, req.fence_seqno);
     if (fence && fence->completed) {
         hw_status = fence->hw_status;
-        list_del(&fence->node);
         spin_unlock(&rdev->fence_lock);
-        kfree(fence);
         req.status = hw_status ? 2 : 0;
         goto out;
     }
@@ -230,12 +244,9 @@ int rvt2_wait_ioctl(struct rvt2_device *rdev, void __user *arg)
     } else {
         spin_lock(&rdev->fence_lock);
         fence = rvt2_find_fence_locked(rdev, req.fence_seqno);
-        if (fence) {
+        if (fence)
             hw_status = fence->hw_status;
-            list_del(&fence->node);
-        }
         spin_unlock(&rdev->fence_lock);
-        kfree(fence);
         req.status = hw_status ? 2 : 0;
     }
 

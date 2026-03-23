@@ -45,17 +45,17 @@ static const struct attribute_group rvt2_attr_group = {
 
 int rvt2_sysfs_init(struct rvt2_device *rdev)
 {
-    if (!rdev->miscdev.this_device)
+    if (!rdev->class_dev)
         return -ENODEV;
 
-    dev_set_drvdata(rdev->miscdev.this_device, rdev);
-    return sysfs_create_group(&rdev->miscdev.this_device->kobj, &rvt2_attr_group);
+    dev_set_drvdata(rdev->class_dev, rdev);
+    return sysfs_create_group(&rdev->class_dev->kobj, &rvt2_attr_group);
 }
 
 void rvt2_sysfs_fini(struct rvt2_device *rdev)
 {
-    if (!rdev->miscdev.this_device)
+    if (!rdev->class_dev)
         return;
 
-    sysfs_remove_group(&rdev->miscdev.this_device->kobj, &rvt2_attr_group);
+    sysfs_remove_group(&rdev->class_dev->kobj, &rvt2_attr_group);
 }

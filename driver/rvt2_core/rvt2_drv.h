@@ -12,7 +12,9 @@
 #include <linux/interrupt.h>
 #include <linux/wait.h>
 #include <linux/list.h>
+#include <linux/mutex.h>
 #include "../../include/uapi/rvt2_drm.h"
+#include "../rvt2_gsp_shim/rvt2_gsp_rpc.h"
 
 #define RVT2_PCI_VENDOR_ID      0x1234
 #define RVT2_PCI_DEVICE_ID      0x1de2
@@ -69,6 +71,7 @@ struct rvt2_bo {
     size_t size;
     void *cpu_addr;
     dma_addr_t dma_addr;
+    bool destroyed;
 };
 
 struct rvt2_fence_state {
@@ -82,10 +85,12 @@ struct rvt2_device {
     struct pci_dev *pdev;
     void __iomem *mmio;
     struct miscdevice miscdev;
+    struct device *class_dev;
 
     /* BO management */
     struct idr bo_idr;
     struct mutex bo_lock;
+    struct mutex submit_lock;
 
     /* Command queue (host-allocated DMA) */
     void *cmdq_cpu;
@@ -108,6 +113,7 @@ struct rvt2_device {
     bool fw_ready;
     u32 engine_count;
     u32 fw_version;
+    struct rvt2_gsp_info gsp;
 };
 
 /* Register access helpers */

@@ -82,36 +82,6 @@ static const struct file_operations rvt2_fops = {
 
 /* ---- Firmware init via mailbox ---- */
 
-static int rvt2_fw_init(struct rvt2_device *rdev)
-{
-    u32 status;
-
-    /* Send INIT command */
-    rvt2_write(rdev, RVT2_REG_MBOX_CMD, RVT2_MBOX_CMD_INIT);
-    status = rvt2_read(rdev, RVT2_REG_MBOX_STATUS);
-    if (status != RVT2_MBOX_STATUS_DONE) {
-        dev_err(&rdev->pdev->dev, "firmware init failed (status=%u)\n", status);
-        return -EIO;
-    }
-
-    /* Query capabilities */
-    rvt2_write(rdev, RVT2_REG_MBOX_CMD, RVT2_MBOX_CMD_QUERY_CAP);
-    status = rvt2_read(rdev, RVT2_REG_MBOX_STATUS);
-    if (status != RVT2_MBOX_STATUS_DONE) {
-        dev_err(&rdev->pdev->dev, "capability query failed\n");
-        return -EIO;
-    }
-
-    rdev->engine_count = rvt2_read(rdev, RVT2_REG_MBOX_DATA0);
-    rdev->fw_version = rvt2_read(rdev, RVT2_REG_MBOX_DATA2);
-    rdev->fw_ready = true;
-
-    dev_info(&rdev->pdev->dev,
-             "firmware ready: engines=%u, fw_version=0x%04x\n",
-             rdev->engine_count, rdev->fw_version);
-    return 0;
-}
-
 /* ---- Queue setup ---- */
 
 static int rvt2_queue_init(struct rvt2_device *rdev)
@@ -216,6 +186,7 @@ static int rvt2_probe(struct pci_dev *pdev, const struct pci_device_id *id)
     }
 
     mutex_init(&rdev->bo_lock);
+    mutex_init(&rdev->submit_lock);
     idr_init(&rdev->bo_idr);
     spin_lock_init(&rdev->fence_lock);
     init_waitqueue_head(&rdev->fence_wq);
@@ -230,11 +201,14 @@ static int rvt2_probe(struct pci_dev *pdev, const struct pci_device_id *id)
         return ret;
     }
 
-    ret = rvt2_fw_init(rdev);
+    ret = rvt2_gsp_attach(&rdev->gsp, &pdev->dev, rdev->mmio);
     if (ret) {
-        dev_err(&pdev->dev, "rvt2_fw_init failed: %d\n", ret);
+        dev_err(&pdev->dev, "rvt2_gsp_attach failed: %d\n", ret);
         goto err_irq;
     }
+    rdev->engine_count = rdev->gsp.engine_count;
+    rdev->fw_version = rdev->gsp.fw_version;
+    rdev->fw_ready = rdev->gsp.ready;
 
     ret = rvt2_queue_init(rdev);
     if (ret) {
@@ -250,17 +224,30 @@ static int rvt2_probe(struct pci_dev *pdev, const struct pci_device_id *id)
     if (ret)
         goto err_queue;
 
+    rdev->class_dev = device_create(rvt2_class, &pdev->dev,
+                                    rdev->miscdev.this_device->devt,
+                                    rdev, "%s", rdev->miscdev.name);
+    if (IS_ERR(rdev->class_dev)) {
+        ret = PTR_ERR(rdev->class_dev);
+        rdev->class_dev = NULL;
+        goto err_misc;
+    }
+
     ret = rvt2_sysfs_init(rdev);
     if (ret)
-        goto err_misc;
+        goto err_class;
 
     dev_info(&pdev->dev, "RVT2 accelerator probed successfully\n");
     return 0;
 
 err_misc:
+err_class:
+    if (rdev->class_dev)
+        device_unregister(rdev->class_dev);
     misc_deregister(&rdev->miscdev);
 err_queue:
     rvt2_queue_fini(rdev);
+    rvt2_gsp_detach(&rdev->gsp);
 err_irq:
     rvt2_irq_fini(rdev);
     return ret;
@@ -271,9 +258,12 @@ static void rvt2_remove(struct pci_dev *pdev)
     struct rvt2_device *rdev = pci_get_drvdata(pdev);
 
     rvt2_sysfs_fini(rdev);
+    if (rdev->class_dev)
+        device_unregister(rdev->class_dev);
     misc_deregister(&rdev->miscdev);
     rvt2_queue_fini(rdev);
     rvt2_bo_cleanup(rdev);
+    rvt2_gsp_detach(&rdev->gsp);
     rvt2_irq_fini(rdev);
     idr_destroy(&rdev->bo_idr);
 }

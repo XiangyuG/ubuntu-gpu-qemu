@@ -15,8 +15,10 @@ static irqreturn_t rvt2_irq_handler(int irq, void *data)
     if (irq_status & (1 << 0))  /* COMPLETION */
         wake_up_all(&rdev->fence_wq);
 
-    if (irq_status & (1 << 1))  /* FAULT */
+    if (irq_status & (1 << 1)) {  /* FAULT */
         dev_err(&rdev->pdev->dev, "device fault detected\n");
+        wake_up_all(&rdev->fence_wq);
+    }
 
     return IRQ_HANDLED;
 }
