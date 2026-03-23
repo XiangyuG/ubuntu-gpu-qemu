@@ -12,3 +12,9 @@ vm-credentials.conf
 vm-console.log
 vm.pid
 nohup.out
+
+# QEMU build artifacts
+qemu/build/
+
+# Humanize local loop state
+.humanize/rlcr/
