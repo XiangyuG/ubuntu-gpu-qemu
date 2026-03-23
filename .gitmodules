@@ -1,0 +1,4 @@
+[submodule "qemu"]
+	path = qemu
+	url = git@github.com:zevorn/qemu.git
+	branch = rvt2-dev
