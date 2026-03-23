@@ -14,6 +14,9 @@
 
 #define RVT2_IOCTL_BASE 'R'
 
+/* BO allocation flags */
+#define RVT2_BO_FLAG_HDM        (1 << 0)    /* Allocate from CXL HDM window */
+
 /* ---- Buffer Object (BO) ioctls ---- */
 
 struct rvt2_bo_create {
