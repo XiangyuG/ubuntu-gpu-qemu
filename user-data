@@ -1,0 +1,5 @@
+#cloud-config
+password: liuchao1523
+chpasswd:
+  expire: false
+ssh_pwauth: true

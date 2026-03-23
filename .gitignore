@@ -1,0 +1,14 @@
+# VM credentials and SSH keys
+vm-credentials.conf
+.vm_key
+.vm_key.pub
+
+# VM disk images (large binaries, regenerate per CLAUDE.md)
+*.qcow2
+*.img
+*.img.xz
+
+# QEMU runtime files
+vm-console.log
+vm.pid
+nohup.out
