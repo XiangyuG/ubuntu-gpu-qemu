@@ -11,7 +11,13 @@ SEED="${SCRIPT_DIR}/seed.img"
 OPENSBI="/usr/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin"
 UBOOT="/usr/share/u-boot-qemu-bin/qemu-riscv64_smode/uboot.elf"
 
-qemu-system-riscv64 \
+# Use locally built QEMU if available, otherwise system QEMU
+QEMU_BIN="${SCRIPT_DIR}/qemu/build/qemu-system-riscv64"
+if [ ! -x "${QEMU_BIN}" ]; then
+    QEMU_BIN="qemu-system-riscv64"
+fi
+
+"${QEMU_BIN}" \
     -machine virt \
     -cpu rv64 \
     -m 8G \
