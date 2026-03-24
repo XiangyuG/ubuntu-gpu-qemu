@@ -1,0 +1,32 @@
+=== RVT2 Guest Validation Transcript ===
+Date: Tue Mar 24 01:37:47 UTC 2026
+Kernel: 6.17.0-14-generic
+
+[PCI enumeration]
+00:01.0 Co-processor: Device 1234:1de2 (rev 01)
+	Subsystem: Red Hat, Inc. Device 1100
+	Flags: bus master, fast devsel, latency 0
+	Memory at 40000000 (32-bit, non-prefetchable) [size=4K]
+	Memory at 400000000 (64-bit, prefetchable) [size=1M]
+	Memory at 40001000 (32-bit, non-prefetchable) [size=4K]
+	Capabilities: <access denied>
+	Kernel driver in use: rvt2_core
+
+
+[sysfs]
+status=OK
+fw_version=0x0100
+engine_count=1
+
+[lspci -k]
+00:01.0 Co-processor: Device 1234:1de2 (rev 01)
+	Subsystem: Red Hat, Inc. Device 1100
+	Kernel driver in use: rvt2_core
+
+[dmesg rvt2]
+[  173.350109] rvt2_core: loading out-of-tree module taints kernel.
+[  173.350213] rvt2_core: module verification failed: signature and/or required key missing - tainting kernel
+[  173.356413] rvt2_core 0000:00:01.0: HDM window: phys=0x400000000 size=1048576
+[  173.356529] rvt2_core 0000:00:01.0: device ID register: 0x52565432
+[  173.357598] rvt2_core 0000:00:01.0: allocated 2 IRQ vectors
+[  173.365158] rvt2_core 0000:00:01.0: RVT2 accelerator probed successfully
