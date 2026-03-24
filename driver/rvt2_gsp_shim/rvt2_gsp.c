@@ -80,7 +80,6 @@ int rvt2_gsp_attach(struct rvt2_gsp_info *info, struct device *dev,
 
     return 0;
 }
-EXPORT_SYMBOL_GPL(rvt2_gsp_attach);
 
 void rvt2_gsp_detach(struct rvt2_gsp_info *info)
 {
@@ -90,9 +89,3 @@ void rvt2_gsp_detach(struct rvt2_gsp_info *info)
     cancel_delayed_work_sync(&info->heartbeat_work);
     memset(info, 0, sizeof(*info));
 }
-EXPORT_SYMBOL_GPL(rvt2_gsp_detach);
-
-MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Chao Liu <chao.liu.zevorn@gmail.com>");
-MODULE_DESCRIPTION("RVT2 GSP Firmware Shim");
-MODULE_FIRMWARE(RVT2_FW_NAME);

@@ -224,26 +224,16 @@ static int rvt2_probe(struct pci_dev *pdev, const struct pci_device_id *id)
     if (ret)
         goto err_queue;
 
-    rdev->class_dev = device_create(rvt2_class, &pdev->dev,
-                                    rdev->miscdev.this_device->devt,
-                                    rdev, "%s", rdev->miscdev.name);
-    if (IS_ERR(rdev->class_dev)) {
-        ret = PTR_ERR(rdev->class_dev);
-        rdev->class_dev = NULL;
-        goto err_misc;
-    }
+    rdev->class_dev = rdev->miscdev.this_device;
 
     ret = rvt2_sysfs_init(rdev);
     if (ret)
-        goto err_class;
+        goto err_misc;
 
     dev_info(&pdev->dev, "RVT2 accelerator probed successfully\n");
     return 0;
 
 err_misc:
-err_class:
-    if (rdev->class_dev)
-        device_unregister(rdev->class_dev);
     misc_deregister(&rdev->miscdev);
 err_queue:
     rvt2_queue_fini(rdev);
@@ -258,8 +248,6 @@ static void rvt2_remove(struct pci_dev *pdev)
     struct rvt2_device *rdev = pci_get_drvdata(pdev);
 
     rvt2_sysfs_fini(rdev);
-    if (rdev->class_dev)
-        device_unregister(rdev->class_dev);
     misc_deregister(&rdev->miscdev);
     rvt2_queue_fini(rdev);
     rvt2_bo_cleanup(rdev);
@@ -309,3 +297,4 @@ module_exit(rvt2_exit);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Chao Liu <chao.liu.zevorn@gmail.com>");
 MODULE_DESCRIPTION("RVT2 Ternary MatMul Accelerator driver");
+MODULE_FIRMWARE("rvt2/firmware.bin");

@@ -170,9 +170,10 @@ int rvt2_bo_mmap(struct rvt2_device *rdev, struct vm_area_struct *vma)
     }
 
     vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
-    vma->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
+    vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);
     vma->vm_private_data = bo;
     vma->vm_ops = &rvt2_bo_vm_ops;
+    vma->vm_pgoff = 0; /* dma_mmap_coherent requires pgoff=0 */
     ret = dma_mmap_coherent(&rdev->pdev->dev, vma,
                             bo->cpu_addr, bo->dma_addr, bo->size);
     if (ret) {
