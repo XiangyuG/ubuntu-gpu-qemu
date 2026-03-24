@@ -64,21 +64,44 @@ check $? "lspci -k shows rvt2_core driver"
 echo ""
 echo "[AC-2 negative tests]"
 python3 -c "
-import fcntl, struct, os
+import fcntl, os, sys
 fd = os.open('/dev/rvt2_0', os.O_RDWR)
 try:
-    fcntl.ioctl(fd, 0xDEAD, b'\\x00'*8)
+    fcntl.ioctl(fd, 0xDEAD, b'\x00'*8)
     print('  FAIL: unknown ioctl did not error')
-    exit(1)
+    sys.exit(1)
 except OSError as e:
     if e.errno == 25:  # ENOTTY
         print('  PASS: unknown ioctl returns ENOTTY')
+        sys.exit(0)
     else:
         print(f'  PASS: unknown ioctl returns errno {e.errno}')
+        sys.exit(0)
 finally:
     os.close(fd)
-" 2>&1 || true
-check $? "AC-2 unknown ioctl negative"
+" 2>&1
+check $? "AC-2 unknown ioctl returns ENOTTY"
+
+# AC-2 negative: insufficient permissions
+echo "[AC-2 permission test]"
+# Try opening as non-root user (device has root-only perms before chmod)
+sudo chmod 600 /dev/rvt2_0
+python3 -c "
+import os, sys
+try:
+    fd = os.open('/dev/rvt2_0', os.O_RDWR)
+    os.close(fd)
+    print('  FAIL: non-root open succeeded (unexpected)')
+    sys.exit(1)
+except PermissionError:
+    print('  PASS: non-root open returns EACCES')
+    sys.exit(0)
+except OSError as e:
+    print(f'  PASS: non-root open returns errno {e.errno}')
+    sys.exit(0)
+" 2>&1
+check $? "AC-2 insufficient permissions returns error"
+sudo chmod 666 /dev/rvt2_0
 
 # AC-3/AC-5/AC-6: smoke test
 echo ""
