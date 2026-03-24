@@ -167,7 +167,7 @@ static int rvt2_probe(struct pci_dev *pdev, const struct pci_device_id *id)
         }
     }
 
-    ret = pcim_iomap_regions(pdev, BIT(0), "rvt2_core");
+    ret = pcim_iomap_regions(pdev, BIT(0) | BIT(2), "rvt2_core");
     if (ret) {
         dev_err(&pdev->dev, "pcim_iomap_regions failed: %d\n", ret);
         return ret;
@@ -176,6 +176,17 @@ static int rvt2_probe(struct pci_dev *pdev, const struct pci_device_id *id)
     rdev->mmio = pcim_iomap_table(pdev)[0];
     if (!rdev->mmio)
         return -ENOMEM;
+
+    /* BAR2: HDM window (optional, for CXL Type-2 stub) */
+    rdev->hdm_io = pcim_iomap_table(pdev)[2];
+    if (rdev->hdm_io) {
+        rdev->hdm_phys = pci_resource_start(pdev, 2);
+        rdev->hdm_size = pci_resource_len(pdev, 2);
+        rdev->hdm_bitmap = 0;
+        dev_info(&pdev->dev, "HDM window: phys=0x%llx size=%lld\n",
+                 (unsigned long long)rdev->hdm_phys,
+                 (unsigned long long)rdev->hdm_size);
+    }
 
     /* Verify device identity */
     dev_id = rvt2_read(rdev, RVT2_REG_ID);
@@ -224,15 +235,24 @@ static int rvt2_probe(struct pci_dev *pdev, const struct pci_device_id *id)
     if (ret)
         goto err_queue;
 
-    rdev->class_dev = rdev->miscdev.this_device;
+    /* Create /sys/class/rvt2/rvt2_0 device for sysfs attributes */
+    rdev->class_dev = device_create(rvt2_class, &pdev->dev, MKDEV(0, 0),
+                                    rdev, "%s", rdev->miscdev.name);
+    if (IS_ERR(rdev->class_dev)) {
+        ret = PTR_ERR(rdev->class_dev);
+        rdev->class_dev = NULL;
+        goto err_misc;
+    }
 
     ret = rvt2_sysfs_init(rdev);
     if (ret)
-        goto err_misc;
+        goto err_class;
 
     dev_info(&pdev->dev, "RVT2 accelerator probed successfully\n");
     return 0;
 
+err_class:
+    device_destroy(rvt2_class, MKDEV(0, 0));
 err_misc:
     misc_deregister(&rdev->miscdev);
 err_queue:
@@ -248,7 +268,10 @@ static void rvt2_remove(struct pci_dev *pdev)
     struct rvt2_device *rdev = pci_get_drvdata(pdev);
 
     rvt2_sysfs_fini(rdev);
+    if (rdev->class_dev)
+        device_destroy(rvt2_class, MKDEV(0, 0));
     misc_deregister(&rdev->miscdev);
+    rvt2_fences_cleanup(rdev);
     rvt2_queue_fini(rdev);
     rvt2_bo_cleanup(rdev);
     rvt2_gsp_detach(&rdev->gsp);

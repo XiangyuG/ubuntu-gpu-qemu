@@ -9,6 +9,7 @@ void rvt2_submit_init(struct rvt2_device *rdev)
 {
     rdev->next_seqno = 1;
     rdev->last_completed_seqno = 0;
+    rdev->new_completions = false;
     INIT_LIST_HEAD(&rdev->fences);
 }
 
@@ -25,6 +26,24 @@ static struct rvt2_fence_state *rvt2_find_fence_locked(struct rvt2_device *rdev,
     return NULL;
 }
 
+/* Remove and free a single fence under fence_lock */
+static void rvt2_reclaim_fence_locked(struct rvt2_fence_state *fence)
+{
+    list_del(&fence->node);
+    kfree(fence);
+}
+
+/* Garbage collect all completed and consumed fences */
+static void rvt2_gc_fences_locked(struct rvt2_device *rdev)
+{
+    struct rvt2_fence_state *fence, *tmp;
+
+    list_for_each_entry_safe(fence, tmp, &rdev->fences, node) {
+        if (fence->completed && fence->consumed)
+            rvt2_reclaim_fence_locked(fence);
+    }
+}
+
 static void rvt2_complete_fence(struct rvt2_device *rdev, u64 seqno, u32 status)
 {
     struct rvt2_fence_state *fence;
@@ -34,6 +53,7 @@ static void rvt2_complete_fence(struct rvt2_device *rdev, u64 seqno, u32 status)
     if (fence) {
         fence->hw_status = status;
         fence->completed = true;
+        rdev->new_completions = true;
     }
     if (status == 0 && seqno > rdev->last_completed_seqno)
         rdev->last_completed_seqno = seqno;
@@ -63,21 +83,23 @@ static void rvt2_harvest_completions(struct rvt2_device *rdev)
 
 bool rvt2_poll_ready(struct rvt2_device *rdev)
 {
-    struct rvt2_fence_state *fence;
-    bool ready = false;
-
     rvt2_harvest_completions(rdev);
 
+    /* Only report ready when there are NEW (unconsumed) completions */
+    return rdev->new_completions;
+}
+
+/* Clean up all fences (called from remove path) */
+void rvt2_fences_cleanup(struct rvt2_device *rdev)
+{
+    struct rvt2_fence_state *fence, *tmp;
+
     spin_lock(&rdev->fence_lock);
-    list_for_each_entry(fence, &rdev->fences, node) {
-        if (fence->completed) {
-            ready = true;
-            break;
-        }
+    list_for_each_entry_safe(fence, tmp, &rdev->fences, node) {
+        list_del(&fence->node);
+        kfree(fence);
     }
     spin_unlock(&rdev->fence_lock);
-
-    return ready;
 }
 
 int rvt2_submit_ioctl(struct rvt2_device *rdev, void __user *arg)
@@ -133,6 +155,12 @@ int rvt2_submit_ioctl(struct rvt2_device *rdev, void __user *arg)
     }
 
     mutex_lock(&rdev->submit_lock);
+
+    /* GC old consumed fences before adding new ones */
+    spin_lock(&rdev->fence_lock);
+    rvt2_gc_fences_locked(rdev);
+    spin_unlock(&rdev->fence_lock);
+
     head = rvt2_read(rdev, RVT2_REG_CMDQ_HEAD) % RVT2_CMDQ_ENTRIES;
     next_tail = (rdev->cmdq_tail + 1) % RVT2_CMDQ_ENTRIES;
     if (next_tail == head) {
@@ -164,7 +192,6 @@ int rvt2_submit_ioctl(struct rvt2_device *rdev, void __user *arg)
     desc->dtype = req.dtype;
     desc->fence_seqno = seqno;
 
-    /* Advance tail and ring doorbell */
     rdev->cmdq_tail = next_tail;
     rvt2_write(rdev, RVT2_REG_CMDQ_TAIL, rdev->cmdq_tail);
     wmb();
@@ -202,13 +229,15 @@ int rvt2_wait_ioctl(struct rvt2_device *rdev, void __user *arg)
     if (req.timeout_ns < -1)
         return -EINVAL;
 
-    /* Harvest any pending completions first */
     rvt2_harvest_completions(rdev);
 
     spin_lock(&rdev->fence_lock);
     fence = rvt2_find_fence_locked(rdev, req.fence_seqno);
     if (fence && fence->completed) {
         hw_status = fence->hw_status;
+        fence->consumed = true;
+        /* Clear new_completions if no more unconsumed fences */
+        rdev->new_completions = false;
         spin_unlock(&rdev->fence_lock);
         req.status = hw_status ? 2 : 0;
         goto out;
@@ -244,8 +273,11 @@ int rvt2_wait_ioctl(struct rvt2_device *rdev, void __user *arg)
     } else {
         spin_lock(&rdev->fence_lock);
         fence = rvt2_find_fence_locked(rdev, req.fence_seqno);
-        if (fence)
+        if (fence) {
             hw_status = fence->hw_status;
+            fence->consumed = true;
+            rdev->new_completions = false;
+        }
         spin_unlock(&rdev->fence_lock);
         req.status = hw_status ? 2 : 0;
     }

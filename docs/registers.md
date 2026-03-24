@@ -2,9 +2,10 @@
 
 ## Overview
 
-The RVT2 ternary matmul accelerator is a PCI device (vendor 0x1234, device 0x1de2, class 0x0b40 co-processor, revision 0x01) with two BARs:
+The RVT2 ternary matmul accelerator is a PCI device (vendor 0x1234, device 0x1de2, class 0x0b40 co-processor, revision 0x01) with three BARs:
 
 - **BAR0** (4KiB): MMIO register space
+- **BAR2** (1MiB, 64-bit prefetchable): HDM window (CXL Type-2 stub — device-managed memory)
 - **BAR4** (4KiB): MSI-X table (exclusive, 2 vectors)
 
 ## BAR0 Register Map
@@ -157,3 +158,32 @@ When a fault occurs (DMA failure, invalid queue config, bad descriptor fetch):
 | 1 | FAULT | DMA failure, queue misconfiguration, or descriptor fetch error |
 
 Interrupts are masked when the corresponding `IRQ_MASK` bit is set to 1.
+
+## BAR2: HDM Window (CXL Type-2 Stub)
+
+BAR2 is a 1MiB 64-bit prefetchable memory region that represents the device's Host Device Memory (HDM). This is a CXL Type-2 stub for future coherent device memory.
+
+### Properties
+
+| Property | Value |
+|----------|-------|
+| BAR index | 2 |
+| Size | 1 MiB (0x100000) |
+| Type | 64-bit, prefetchable |
+| Access | Read/write from host CPU |
+
+### HDM Registers (BAR0)
+
+| Offset | Name | Access | Description |
+|--------|------|--------|-------------|
+| 0xA0 | HDM_BASE_LO | RO | HDM window base address [31:0] (BAR2 address) |
+| 0xA4 | HDM_BASE_HI | RO | HDM window base address [63:32] |
+| 0xA8 | HDM_SIZE | RO | HDM window size in bytes (0x100000 = 1MiB) |
+
+### Driver Interface
+
+Userspace allocates HDM-backed buffer objects via `RVT2_IOCTL_BO_CREATE` with `flags = RVT2_BO_FLAG_HDM`. The driver maps a page from BAR2 and returns it as a regular BO that can be mmap'd and used for compute operations.
+
+### Coherence Model
+
+In the current QEMU stub, the HDM window is backed by plain RAM with MMIO access semantics. Reads and writes from the host CPU are immediately visible. Future CXL Type-2 implementations would use CXL.cache/CXL.mem protocols for cache coherence.

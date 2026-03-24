@@ -37,5 +37,6 @@ void rvt2_gsp_detach(struct rvt2_gsp_info *info);
 u32 rvt2_gsp_read(struct rvt2_gsp_info *info, u32 offset);
 void rvt2_gsp_write(struct rvt2_gsp_info *info, u32 offset, u32 val);
 int rvt2_gsp_mbox_cmd(struct rvt2_gsp_info *info, u32 cmd);
+void rvt2_gsp_latch_fault(struct rvt2_gsp_info *info);
 
 #endif /* _RVT2_GSP_RPC_H_ */

@@ -20,16 +20,13 @@ static void rvt2_heartbeat_work_fn(struct work_struct *work)
 
     ret = rvt2_gsp_mbox_cmd(info, RVT2_MBOX_CMD_HEARTBEAT);
     if (ret) {
-        info->heartbeat_alive = false;
-        info->ready = false;
-        dev_err(info->dev, "firmware heartbeat failed: %d\n", ret);
+        rvt2_gsp_latch_fault(info);
         return;
     }
 
     info->heartbeat_alive = (rvt2_gsp_read(info, RVT2_REG_MBOX_DATA0) == 1);
     if (!info->heartbeat_alive) {
-        info->ready = false;
-        dev_err(info->dev, "firmware heartbeat negative\n");
+        rvt2_gsp_latch_fault(info);
         return;
     }
 
