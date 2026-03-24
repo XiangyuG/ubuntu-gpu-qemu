@@ -10,6 +10,7 @@
 #include <linux/firmware.h>
 #include <linux/delay.h>
 #include <linux/string.h>
+#include <linux/dma-mapping.h>
 #include "rvt2_gsp_rpc.h"
 
 #define RVT2_FW_NAME            "rvt2/firmware.bin"
@@ -52,7 +53,33 @@ int rvt2_gsp_attach(struct rvt2_gsp_info *info, struct device *dev,
         dev_err(dev, "request_firmware(%s) failed: %d\n", RVT2_FW_NAME, ret);
         return ret;
     }
-    release_firmware(fw);
+
+    /* DMA-upload firmware blob to device */
+    {
+        void *fw_buf;
+        dma_addr_t fw_dma;
+        size_t fw_sz = fw->size;
+
+        fw_buf = dma_alloc_coherent(dev, fw_sz, &fw_dma, GFP_KERNEL);
+        if (!fw_buf) {
+            release_firmware(fw);
+            return -ENOMEM;
+        }
+        memcpy(fw_buf, fw->data, fw_sz);
+        release_firmware(fw);
+
+        rvt2_gsp_write(info, RVT2_REG_FW_ADDR_LO, lower_32_bits(fw_dma));
+        rvt2_gsp_write(info, RVT2_REG_FW_ADDR_HI, upper_32_bits(fw_dma));
+        rvt2_gsp_write(info, RVT2_REG_FW_SIZE, (u32)fw_sz);
+
+        ret = rvt2_gsp_mbox_cmd(info, RVT2_MBOX_CMD_LOAD_FW);
+        dma_free_coherent(dev, fw_sz, fw_buf, fw_dma);
+        if (ret) {
+            dev_err(dev, "firmware upload failed: %d\n", ret);
+            return ret;
+        }
+        dev_info(dev, "firmware uploaded (%zu bytes)\n", fw_sz);
+    }
 
     ret = rvt2_gsp_mbox_cmd(info, RVT2_MBOX_CMD_INIT);
     if (ret) {

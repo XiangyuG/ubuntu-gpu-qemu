@@ -327,8 +327,8 @@ int rvt2_submit_raw_ioctl(struct rvt2_device *rdev, void __user *arg)
         goto err_free_descs;
     }
 
-    /* Phase 2: Pre-allocate all fences */
-    fences = kmalloc_array(req.desc_count, sizeof(*fences), GFP_KERNEL);
+    /* Phase 2: Pre-allocate all fences (kcalloc ensures NULL init) */
+    fences = kcalloc(req.desc_count, sizeof(*fences), GFP_KERNEL);
     if (!fences) {
         ret = -ENOMEM;
         goto err_free_descs;

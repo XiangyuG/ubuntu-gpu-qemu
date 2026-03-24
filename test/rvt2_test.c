@@ -250,17 +250,69 @@ static int test_submit_wait(void)
     return 0;
 }
 
+static int test_multi_fence(void)
+{
+    rvt2_dev_t dev;
+    rvt2_bo_t bo_a, bo_b, bo_c, bo_d1, bo_d2;
+    uint64_t seqno1, seqno2;
+    int ret;
+
+    printf("[Test: multi-fence regression]\n");
+    ret = rvt2_open(&dev);
+    if (ret) { printf("  FAIL: open\n"); tests_failed++; return -1; }
+
+    size_t sz = TEST_M * TEST_K * sizeof(float);
+    ret = rvt2_bo_alloc(&dev, sz, 0, &bo_a);
+    ret |= rvt2_bo_alloc(&dev, TEST_K * TEST_N * sizeof(float), 0, &bo_b);
+    ret |= rvt2_bo_alloc(&dev, TEST_M * TEST_N * sizeof(float), 0, &bo_c);
+    ret |= rvt2_bo_alloc(&dev, TEST_M * TEST_N * sizeof(float), 0, &bo_d1);
+    ret |= rvt2_bo_alloc(&dev, TEST_M * TEST_N * sizeof(float), 0, &bo_d2);
+    if (ret) { printf("  FAIL: alloc\n"); tests_failed++; rvt2_close(&dev); return -1; }
+
+    float *a = rvt2_bo_map(&dev, &bo_a);
+    float *b = rvt2_bo_map(&dev, &bo_b);
+    float *c = rvt2_bo_map(&dev, &bo_c);
+    for (int i = 0; i < TEST_M * TEST_K; i++) a[i] = 1.0f;
+    for (int i = 0; i < TEST_K * TEST_N; i++) b[i] = 1.0f;
+    for (int i = 0; i < TEST_M * TEST_N; i++) c[i] = 0.0f;
+
+    /* Submit two jobs */
+    ret = rvt2_submit(&dev, bo_a.handle, bo_b.handle,
+                      bo_c.handle, bo_d1.handle,
+                      TEST_M, TEST_N, TEST_K, 0, &seqno1);
+    CHECK(ret == 0, "first submit succeeds");
+
+    ret = rvt2_submit(&dev, bo_a.handle, bo_b.handle,
+                      bo_c.handle, bo_d2.handle,
+                      TEST_M, TEST_N, TEST_K, 0, &seqno2);
+    CHECK(ret == 0, "second submit succeeds");
+    CHECK(seqno2 > seqno1, "seqno monotonically increasing");
+
+    /* Wait for second (implies first also done) */
+    ret = rvt2_wait(&dev, seqno2, 5000000000LL);
+    CHECK(ret == 0, "wait for seqno2 succeeds");
+
+    /* Wait for first (already signaled, should return immediately) */
+    ret = rvt2_wait(&dev, seqno1, 0);
+    CHECK(ret == 0, "already-signaled seqno1 wait returns immediately");
+
+    rvt2_bo_free(&dev, &bo_a);
+    rvt2_bo_free(&dev, &bo_b);
+    rvt2_bo_free(&dev, &bo_c);
+    rvt2_bo_free(&dev, &bo_d1);
+    rvt2_bo_free(&dev, &bo_d2);
+    rvt2_close(&dev);
+    return 0;
+}
+
 int main(void)
 {
     printf("=== RVT2 Smoke Test ===\n\n");
 
     test_open_close();
     test_bo_lifecycle();
-    /* test_destroy_sigbus: disabled in main flow because zap_vma_ptes
-     * on DMA coherent pages causes kernel hang on RISC-V QEMU.
-     * The VMA invalidation code is in rvt2_bo.c and is tested
-     * via the destroy-invalid-handle negative path below. */
     test_submit_wait();
+    test_multi_fence();
 
     printf("\n=== Results: %d passed, %d failed ===\n",
            tests_passed, tests_failed);

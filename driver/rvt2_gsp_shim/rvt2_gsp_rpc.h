@@ -16,8 +16,14 @@
 #define RVT2_MBOX_CMD_INIT          0x01
 #define RVT2_MBOX_CMD_QUERY_CAP     0x02
 #define RVT2_MBOX_CMD_HEARTBEAT     0x03
+#define RVT2_MBOX_CMD_LOAD_FW       0x04
 #define RVT2_MBOX_STATUS_DONE       0x02
 #define RVT2_MBOX_STATUS_ERROR      0x03
+
+#define RVT2_REG_FW_ADDR_LO    0xB0
+#define RVT2_REG_FW_ADDR_HI    0xB4
+#define RVT2_REG_FW_SIZE       0xB8
+#define RVT2_REG_FAULT_SET     0xBC
 
 struct rvt2_gsp_info {
     bool ready;

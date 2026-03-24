@@ -13,10 +13,6 @@
 #define RVT2_MBOX_TIMEOUT_US    100000  /* 100ms deadline */
 #define RVT2_MBOX_POLL_US       100     /* poll every 100us */
 
-/* HW register offsets for fault propagation */
-#define RVT2_REG_STATUS         0x08
-#define RVT2_STATUS_ERROR       (1 << 2)
-
 u32 rvt2_gsp_read(struct rvt2_gsp_info *info, u32 offset)
 {
     return readl(info->mmio + offset);
@@ -57,17 +53,11 @@ EXPORT_SYMBOL_GPL(rvt2_gsp_mbox_cmd);
 
 void rvt2_gsp_latch_fault(struct rvt2_gsp_info *info)
 {
-    u32 status;
-
     info->ready = false;
     info->heartbeat_alive = false;
 
-    /* Read current HW status and set ERROR bit for device-visible fault */
-    status = rvt2_gsp_read(info, RVT2_REG_STATUS);
-    status |= RVT2_STATUS_ERROR;
-    /* Note: on real HW this would be a firmware-side status latch.
-     * On QEMU the STATUS register is read-only from guest, so
-     * the submit path checks gsp.ready instead. */
+    /* Write FAULT_SET register to make fault MMIO-visible */
+    rvt2_gsp_write(info, RVT2_REG_FAULT_SET, 1);
 
     dev_err(info->dev, "GSP fault latched, device entering error state\n");
 }

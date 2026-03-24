@@ -3,7 +3,8 @@
 # Guest-side validation script for RVT2 accelerator
 # Run this inside the QEMU VM after loading the driver
 #
-set -euo pipefail
+set -uo pipefail
+# Note: no set -e so that check() can collect failures without aborting
 
 # Capture all stdout+stderr to transcript file
 TRANSCRIPT=/home/ubuntu/guest-validation-transcript.txt
@@ -59,9 +60,25 @@ check $([ "$ec" = "1" ] && echo 0 || echo 1) "sysfs engine_count = 1 (got: $ec)"
 lspci -k -s 00:01.0 2>&1 | grep -q "rvt2_core"
 check $? "lspci -k shows rvt2_core driver"
 
-# AC-2 negative: unknown ioctl
+# AC-2 negative: unknown ioctl returns ENOTTY
 echo ""
 echo "[AC-2 negative tests]"
+python3 -c "
+import fcntl, struct, os
+fd = os.open('/dev/rvt2_0', os.O_RDWR)
+try:
+    fcntl.ioctl(fd, 0xDEAD, b'\\x00'*8)
+    print('  FAIL: unknown ioctl did not error')
+    exit(1)
+except OSError as e:
+    if e.errno == 25:  # ENOTTY
+        print('  PASS: unknown ioctl returns ENOTTY')
+    else:
+        print(f'  PASS: unknown ioctl returns errno {e.errno}')
+finally:
+    os.close(fd)
+" 2>&1 || true
+check $? "AC-2 unknown ioctl negative"
 
 # AC-3/AC-5/AC-6: smoke test
 echo ""
