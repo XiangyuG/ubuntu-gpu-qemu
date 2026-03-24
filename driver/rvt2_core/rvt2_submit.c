@@ -76,7 +76,7 @@ static void rvt2_complete_fence(struct rvt2_device *rdev, u64 seqno, u32 status)
     if (fence && !fence->completed) {
         fence->hw_status = status;
         fence->completed = true;
-        dma_fence_signal(&fence->base);
+        dma_fence_signal_locked(&fence->base);
         atomic_inc(&rdev->unread_completions);
     }
     if (status == 0 && seqno > rdev->last_completed_seqno)
@@ -118,7 +118,7 @@ void rvt2_fences_cleanup(struct rvt2_device *rdev)
     list_for_each_entry_safe(fence, tmp, &rdev->fences, node) {
         list_del(&fence->node);
         if (!fence->completed)
-            dma_fence_signal(&fence->base);
+            dma_fence_signal_locked(&fence->base);
         dma_fence_put(&fence->base);
     }
     spin_unlock(&rdev->fence_lock);
