@@ -1,9 +1,9 @@
 === RVT2 Guest Validation Transcript ===
-Date: Tue Mar 24 03:02:00 UTC 2026
+Date: Tue Mar 24 04:33:47 UTC 2026
 Kernel: 6.17.0-14-generic
 
 [Dual-module load]
-rvt2_core             176128  0
+rvt2_core             184320  0
 rvt2_gsp_shim          28672  1 rvt2_core
 
 [PCI]
@@ -27,10 +27,94 @@ engine_count=1
 	Subsystem: Red Hat, Inc. Device 1100
 	Kernel driver in use: rvt2_core
 
-[dmesg]
-[  140.056805] rvt2_gsp_shim: loading out-of-tree module taints kernel.
-[  140.056956] rvt2_gsp_shim: module verification failed: signature and/or required key missing - tainting kernel
-[  140.152811] rvt2_core 0000:00:01.0: HDM window: phys=0x400000000 size=1048576 pages=256
-[  140.152892] rvt2_core 0000:00:01.0: device ID register: 0x52565432
-[  140.153983] rvt2_core 0000:00:01.0: allocated 2 IRQ vectors
-[  140.164295] rvt2_core 0000:00:01.0: RVT2 accelerator probed successfully
+[dmesg rvt2]
+[  145.034553] rvt2_gsp_shim: loading out-of-tree module taints kernel.
+[  145.034677] rvt2_gsp_shim: module verification failed: signature and/or required key missing - tainting kernel
+[  145.126402] rvt2_core 0000:00:01.0: HDM window: phys=0x400000000 size=1048576 pages=256
+[  145.126473] rvt2_core 0000:00:01.0: device ID register: 0x52565432
+[  145.128503] rvt2_core 0000:00:01.0: allocated 2 IRQ vectors
+[  145.130320] rvt2_core 0000:00:01.0: firmware uploaded (8 bytes)
+[  145.134421] rvt2_core 0000:00:01.0: RVT2 accelerator probed successfully
+
+[rvt2_test output]
+=== RVT2 Smoke Test ===
+
+[Test: device open/close]
+  PASS: rvt2_open succeeds
+  PASS: rvt2_close succeeds
+[Test: BO lifecycle]
+  PASS: rvt2_bo_alloc(4096) succeeds
+  PASS: rvt2_bo_map returns non-NULL
+  PASS: mmap read/write works
+  PASS: rvt2_bo_free succeeds
+  PASS: rvt2_bo_alloc(0) returns error
+  PASS: BO_DESTROY(invalid handle) returns error
+  PASS: BO_INFO on destroyed handle returns error
+[Test: submit and wait]
+  PASS: allocate 4 BOs
+  PASS: map all BOs
+  PASS: rvt2_submit succeeds
+  PASS: rvt2_wait returns signaled
+  PASS: D = A*B+C result matches reference
+  PASS: rvt2_wait(timeout=0, future seqno) returns timeout
+  PASS: rvt2_submit(invalid handle) returns error
+[Test: multi-fence regression]
+  PASS: first submit succeeds
+  PASS: second submit succeeds
+  PASS: seqno monotonically increasing
+  PASS: wait for seqno2 succeeds
+  PASS: already-signaled seqno1 wait returns immediately
+
+=== Results: 21 passed, 0 failed ===
+
+[rvt2_compiledd_e2e output]
+compiledd: 1 descriptors generated, 0 errors
+compiledd: 2 descriptors generated, 0 errors
+=== RVT2 compiledd End-to-End Test ===
+
+[Test: single descriptor via compiledd]
+  PASS: compiledd single desc produced 64B
+  PASS: submit_raw single desc
+  PASS: wait single desc
+  PASS: D=A*B+C matches reference (single)
+[Test: 2-descriptor chain via compiledd]
+  PASS: compiledd produced 128-byte (2 descriptors)
+  PASS: submit_raw 2-descriptor chain
+  PASS: wait 2-descriptor chain
+  PASS: chain desc[0] D=A*B+C correct
+  PASS: chain desc[1] D=A*B+C correct
+
+=== Results: 9 passed, 0 failed ===
+
+[rvt2_cxl_test output]
+=== RVT2 CXL Type-2 HDM Test ===
+
+[Test: CXL Type-2 HDM BO via driver]
+  PASS: HDM BO alloc succeeds
+  PASS: HDM BO mmap succeeds
+  PASS: HDM write/read word 0 coherent
+  PASS: HDM write/read word 1 coherent
+  PASS: HDM 1KiB pattern write/read coherent
+  PASS: HDM BO destroy succeeds
+  PASS: HDM BO alloc beyond window size returns error
+
+=== Results: 7 passed, 0 failed ===
+
+[rvt2_bench output]
+=== RVT2 Benchmark ===
+     4x   4x   4 : 0.04 ms/iter, 0.0034 GFLOPS (emulated)
+    16x  16x  16 : 0.06 ms/iter, 0.1519 GFLOPS (emulated)
+    32x  32x  32 : 0.07 ms/iter, 0.8992 GFLOPS (emulated)
+    64x  64x  64 : 0.13 ms/iter, 3.9601 GFLOPS (emulated)
+
+[test_compiledd.sh output]
+=== compiledd tests ===
+  PASS: valid IR produces 64-byte descriptor
+  PASS: two IR lines produce 128-byte output
+  PASS: malformed IR returns error
+  PASS: zero dimension returns error
+  PASS: unsupported operation returns error
+
+=== Results: 5 passed, 0 failed ===
+
+=== End of transcript ===
