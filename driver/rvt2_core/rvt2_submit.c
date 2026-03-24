@@ -3,15 +3,45 @@
 #include <linux/sched.h>
 #include <linux/poll.h>
 #include <linux/slab.h>
+#include <linux/dma-fence.h>
 #include "rvt2_drv.h"
+
+/* ---- dma_fence ops ---- */
+
+static const char *rvt2_fence_get_driver_name(struct dma_fence *fence)
+{
+    return "rvt2";
+}
+
+static const char *rvt2_fence_get_timeline_name(struct dma_fence *fence)
+{
+    return "rvt2_submit";
+}
+
+static void rvt2_fence_release(struct dma_fence *fence)
+{
+    struct rvt2_fence_state *fs = container_of(fence, struct rvt2_fence_state, base);
+    kfree(fs);
+}
+
+static const struct dma_fence_ops rvt2_fence_ops = {
+    .get_driver_name = rvt2_fence_get_driver_name,
+    .get_timeline_name = rvt2_fence_get_timeline_name,
+    .release = rvt2_fence_release,
+};
+
+/* ---- Init ---- */
 
 void rvt2_submit_init(struct rvt2_device *rdev)
 {
     rdev->next_seqno = 1;
     rdev->last_completed_seqno = 0;
-    rdev->new_completions = false;
+    atomic_set(&rdev->unread_completions, 0);
+    rdev->fence_context = dma_fence_context_alloc(1);
     INIT_LIST_HEAD(&rdev->fences);
 }
+
+/* ---- Fence helpers ---- */
 
 static struct rvt2_fence_state *rvt2_find_fence_locked(struct rvt2_device *rdev,
                                                        u64 seqno)
@@ -22,25 +52,18 @@ static struct rvt2_fence_state *rvt2_find_fence_locked(struct rvt2_device *rdev,
         if (fence->seqno == seqno)
             return fence;
     }
-
     return NULL;
 }
 
-/* Remove and free a single fence under fence_lock */
-static void rvt2_reclaim_fence_locked(struct rvt2_fence_state *fence)
-{
-    list_del(&fence->node);
-    kfree(fence);
-}
-
-/* Garbage collect all completed and consumed fences */
 static void rvt2_gc_fences_locked(struct rvt2_device *rdev)
 {
     struct rvt2_fence_state *fence, *tmp;
 
     list_for_each_entry_safe(fence, tmp, &rdev->fences, node) {
-        if (fence->completed && fence->consumed)
-            rvt2_reclaim_fence_locked(fence);
+        if (fence->consumed) {
+            list_del(&fence->node);
+            dma_fence_put(&fence->base);
+        }
     }
 }
 
@@ -50,10 +73,11 @@ static void rvt2_complete_fence(struct rvt2_device *rdev, u64 seqno, u32 status)
 
     spin_lock(&rdev->fence_lock);
     fence = rvt2_find_fence_locked(rdev, seqno);
-    if (fence) {
+    if (fence && !fence->completed) {
         fence->hw_status = status;
         fence->completed = true;
-        rdev->new_completions = true;
+        dma_fence_signal(&fence->base);
+        atomic_inc(&rdev->unread_completions);
     }
     if (status == 0 && seqno > rdev->last_completed_seqno)
         rdev->last_completed_seqno = seqno;
@@ -73,7 +97,6 @@ static void rvt2_harvest_completions(struct rvt2_device *rdev)
 
         cpl = rdev->cplq_cpu + (rdev->cplq_head % RVT2_CPLQ_ENTRIES) * RVT2_CPL_SIZE;
         rvt2_complete_fence(rdev, cpl->fence_seqno, cpl->status);
-
         rdev->cplq_head = (rdev->cplq_head + 1) % RVT2_CPLQ_ENTRIES;
     }
 
@@ -84,12 +107,9 @@ static void rvt2_harvest_completions(struct rvt2_device *rdev)
 bool rvt2_poll_ready(struct rvt2_device *rdev)
 {
     rvt2_harvest_completions(rdev);
-
-    /* Only report ready when there are NEW (unconsumed) completions */
-    return rdev->new_completions;
+    return atomic_read(&rdev->unread_completions) > 0;
 }
 
-/* Clean up all fences (called from remove path) */
 void rvt2_fences_cleanup(struct rvt2_device *rdev)
 {
     struct rvt2_fence_state *fence, *tmp;
@@ -97,10 +117,14 @@ void rvt2_fences_cleanup(struct rvt2_device *rdev)
     spin_lock(&rdev->fence_lock);
     list_for_each_entry_safe(fence, tmp, &rdev->fences, node) {
         list_del(&fence->node);
-        kfree(fence);
+        if (!fence->completed)
+            dma_fence_signal(&fence->base);
+        dma_fence_put(&fence->base);
     }
     spin_unlock(&rdev->fence_lock);
 }
+
+/* ---- Submit ioctl ---- */
 
 int rvt2_submit_ioctl(struct rvt2_device *rdev, void __user *arg)
 {
@@ -109,14 +133,11 @@ int rvt2_submit_ioctl(struct rvt2_device *rdev, void __user *arg)
     struct rvt2_fence_state *fence;
     struct rvt2_descriptor *desc;
     u64 seqno;
-    u32 head;
-    u32 next_tail;
-    u32 status;
+    u32 head, next_tail, status;
 
     if (copy_from_user(&req, arg, sizeof(req)))
         return -EFAULT;
 
-    /* Validate device state */
     status = rvt2_read(rdev, RVT2_REG_STATUS);
     if (status & RVT2_STATUS_ERROR)
         return -EIO;
@@ -124,39 +145,23 @@ int rvt2_submit_ioctl(struct rvt2_device *rdev, void __user *arg)
         return -EIO;
 
     bo_a = rvt2_bo_lookup(rdev, req.bo_a);
-    if (!bo_a)
-        return -EINVAL;
+    if (!bo_a) return -EINVAL;
     bo_b = rvt2_bo_lookup(rdev, req.bo_b);
-    if (!bo_b) {
-        rvt2_bo_put(bo_a);
-        return -EINVAL;
-    }
+    if (!bo_b) { rvt2_bo_put(bo_a); return -EINVAL; }
     bo_c = rvt2_bo_lookup(rdev, req.bo_c);
-    if (!bo_c) {
-        rvt2_bo_put(bo_a);
-        rvt2_bo_put(bo_b);
-        return -EINVAL;
-    }
+    if (!bo_c) { rvt2_bo_put(bo_a); rvt2_bo_put(bo_b); return -EINVAL; }
     bo_d = rvt2_bo_lookup(rdev, req.bo_d);
-    if (!bo_d) {
-        rvt2_bo_put(bo_a);
-        rvt2_bo_put(bo_b);
-        rvt2_bo_put(bo_c);
-        return -EINVAL;
-    }
+    if (!bo_d) { rvt2_bo_put(bo_a); rvt2_bo_put(bo_b); rvt2_bo_put(bo_c); return -EINVAL; }
 
     fence = kzalloc(sizeof(*fence), GFP_KERNEL);
     if (!fence) {
-        rvt2_bo_put(bo_a);
-        rvt2_bo_put(bo_b);
-        rvt2_bo_put(bo_c);
-        rvt2_bo_put(bo_d);
+        rvt2_bo_put(bo_a); rvt2_bo_put(bo_b);
+        rvt2_bo_put(bo_c); rvt2_bo_put(bo_d);
         return -ENOMEM;
     }
 
     mutex_lock(&rdev->submit_lock);
 
-    /* GC old consumed fences before adding new ones */
     spin_lock(&rdev->fence_lock);
     rvt2_gc_fences_locked(rdev);
     spin_unlock(&rdev->fence_lock);
@@ -165,10 +170,8 @@ int rvt2_submit_ioctl(struct rvt2_device *rdev, void __user *arg)
     next_tail = (rdev->cmdq_tail + 1) % RVT2_CMDQ_ENTRIES;
     if (next_tail == head) {
         mutex_unlock(&rdev->submit_lock);
-        rvt2_bo_put(bo_a);
-        rvt2_bo_put(bo_b);
-        rvt2_bo_put(bo_c);
-        rvt2_bo_put(bo_d);
+        rvt2_bo_put(bo_a); rvt2_bo_put(bo_b);
+        rvt2_bo_put(bo_c); rvt2_bo_put(bo_d);
         kfree(fence);
         return -EBUSY;
     }
@@ -176,6 +179,8 @@ int rvt2_submit_ioctl(struct rvt2_device *rdev, void __user *arg)
     spin_lock(&rdev->fence_lock);
     seqno = rdev->next_seqno++;
     fence->seqno = seqno;
+    dma_fence_init(&fence->base, &rvt2_fence_ops, &rdev->fence_lock,
+                   rdev->fence_context, seqno);
     list_add_tail(&fence->node, &rdev->fences);
     spin_unlock(&rdev->fence_lock);
 
@@ -186,9 +191,7 @@ int rvt2_submit_ioctl(struct rvt2_device *rdev, void __user *arg)
     desc->input_b_addr = bo_b->dma_addr;
     desc->input_c_addr = bo_c->dma_addr;
     desc->output_d_addr = bo_d->dma_addr;
-    desc->m = req.m;
-    desc->n = req.n;
-    desc->k = req.k;
+    desc->m = req.m; desc->n = req.n; desc->k = req.k;
     desc->dtype = req.dtype;
     desc->fence_seqno = seqno;
 
@@ -198,34 +201,32 @@ int rvt2_submit_ioctl(struct rvt2_device *rdev, void __user *arg)
     rvt2_write(rdev, RVT2_REG_DOORBELL, 1);
     mutex_unlock(&rdev->submit_lock);
 
-    rvt2_bo_put(bo_a);
-    rvt2_bo_put(bo_b);
-    rvt2_bo_put(bo_c);
-    rvt2_bo_put(bo_d);
+    rvt2_bo_put(bo_a); rvt2_bo_put(bo_b);
+    rvt2_bo_put(bo_c); rvt2_bo_put(bo_d);
 
     req.fence_seqno = seqno;
     if (copy_to_user(arg, &req, sizeof(req))) {
         spin_lock(&rdev->fence_lock);
         list_del(&fence->node);
         spin_unlock(&rdev->fence_lock);
-        kfree(fence);
+        dma_fence_put(&fence->base);
         return -EFAULT;
     }
 
     return 0;
 }
 
+/* ---- Wait ioctl ---- */
+
 int rvt2_wait_ioctl(struct rvt2_device *rdev, void __user *arg)
 {
     struct rvt2_wait req;
     struct rvt2_fence_state *fence;
-    long timeout_jiffies;
-    long ret;
+    long timeout_jiffies, ret;
     u32 hw_status = 0;
 
     if (copy_from_user(&req, arg, sizeof(req)))
         return -EFAULT;
-
     if (req.timeout_ns < -1)
         return -EINVAL;
 
@@ -235,9 +236,10 @@ int rvt2_wait_ioctl(struct rvt2_device *rdev, void __user *arg)
     fence = rvt2_find_fence_locked(rdev, req.fence_seqno);
     if (fence && fence->completed) {
         hw_status = fence->hw_status;
-        fence->consumed = true;
-        /* Clear new_completions if no more unconsumed fences */
-        rdev->new_completions = false;
+        if (!fence->consumed) {
+            fence->consumed = true;
+            atomic_dec(&rdev->unread_completions);
+        }
         spin_unlock(&rdev->fence_lock);
         req.status = hw_status ? 2 : 0;
         goto out;
@@ -245,14 +247,12 @@ int rvt2_wait_ioctl(struct rvt2_device *rdev, void __user *arg)
     spin_unlock(&rdev->fence_lock);
 
     if (req.timeout_ns == 0) {
-        req.status = 1; /* timeout */
+        req.status = 1;
         goto out;
     }
 
-    if (req.timeout_ns < 0)
-        timeout_jiffies = MAX_SCHEDULE_TIMEOUT;
-    else
-        timeout_jiffies = nsecs_to_jiffies(req.timeout_ns);
+    timeout_jiffies = (req.timeout_ns < 0) ? MAX_SCHEDULE_TIMEOUT
+                                            : nsecs_to_jiffies(req.timeout_ns);
 
     ret = wait_event_interruptible_timeout(rdev->fence_wq,
         ({
@@ -267,7 +267,7 @@ int rvt2_wait_ioctl(struct rvt2_device *rdev, void __user *arg)
         timeout_jiffies);
 
     if (ret == 0) {
-        req.status = 1; /* timeout */
+        req.status = 1;
     } else if (ret < 0) {
         return -ERESTARTSYS;
     } else {
@@ -275,9 +275,12 @@ int rvt2_wait_ioctl(struct rvt2_device *rdev, void __user *arg)
         fence = rvt2_find_fence_locked(rdev, req.fence_seqno);
         if (fence) {
             hw_status = fence->hw_status;
-            fence->consumed = true;
-            rdev->new_completions = false;
+            if (!fence->consumed) {
+                fence->consumed = true;
+                atomic_dec(&rdev->unread_completions);
+            }
         }
+        rvt2_gc_fences_locked(rdev);
         spin_unlock(&rdev->fence_lock);
         req.status = hw_status ? 2 : 0;
     }
@@ -285,5 +288,84 @@ int rvt2_wait_ioctl(struct rvt2_device *rdev, void __user *arg)
 out:
     if (copy_to_user(arg, &req, sizeof(req)))
         return -EFAULT;
+    return 0;
+}
+
+/* ---- Raw descriptor submit ioctl (for compiledd pipeline) ---- */
+
+int rvt2_submit_raw_ioctl(struct rvt2_device *rdev, void __user *arg)
+{
+    struct rvt2_submit_raw req;
+    struct rvt2_descriptor user_desc;
+    struct rvt2_fence_state *fence;
+    struct rvt2_descriptor *desc;
+    u64 seqno = 0;
+    u32 head, next_tail, status, i;
+    void __user *blob;
+
+    if (copy_from_user(&req, arg, sizeof(req)))
+        return -EFAULT;
+    if (req.desc_count == 0 || req.desc_count > RVT2_CMDQ_ENTRIES)
+        return -EINVAL;
+
+    status = rvt2_read(rdev, RVT2_REG_STATUS);
+    if (status & RVT2_STATUS_ERROR)
+        return -EIO;
+    if (!rdev->gsp.ready || !rdev->gsp.heartbeat_alive)
+        return -EIO;
+
+    blob = (void __user *)(unsigned long)req.desc_addr;
+
+    mutex_lock(&rdev->submit_lock);
+
+    spin_lock(&rdev->fence_lock);
+    rvt2_gc_fences_locked(rdev);
+    spin_unlock(&rdev->fence_lock);
+
+    for (i = 0; i < req.desc_count; i++) {
+        if (copy_from_user(&user_desc, blob + i * RVT2_DESC_SIZE,
+                           sizeof(user_desc))) {
+            mutex_unlock(&rdev->submit_lock);
+            return -EFAULT;
+        }
+
+        head = rvt2_read(rdev, RVT2_REG_CMDQ_HEAD) % RVT2_CMDQ_ENTRIES;
+        next_tail = (rdev->cmdq_tail + 1) % RVT2_CMDQ_ENTRIES;
+        if (next_tail == head) {
+            mutex_unlock(&rdev->submit_lock);
+            return -EBUSY;
+        }
+
+        fence = kzalloc(sizeof(*fence), GFP_KERNEL);
+        if (!fence) {
+            mutex_unlock(&rdev->submit_lock);
+            return -ENOMEM;
+        }
+
+        spin_lock(&rdev->fence_lock);
+        seqno = rdev->next_seqno++;
+        fence->seqno = seqno;
+        dma_fence_init(&fence->base, &rvt2_fence_ops, &rdev->fence_lock,
+                       rdev->fence_context, seqno);
+        list_add_tail(&fence->node, &rdev->fences);
+        spin_unlock(&rdev->fence_lock);
+
+        /* Copy user descriptor into cmdq, overwrite fence_seqno */
+        desc = rdev->cmdq_cpu + (rdev->cmdq_tail % RVT2_CMDQ_ENTRIES) * RVT2_DESC_SIZE;
+        memcpy(desc, &user_desc, RVT2_DESC_SIZE);
+        desc->fence_seqno = seqno;
+
+        rdev->cmdq_tail = next_tail;
+        rvt2_write(rdev, RVT2_REG_CMDQ_TAIL, rdev->cmdq_tail);
+    }
+
+    wmb();
+    rvt2_write(rdev, RVT2_REG_DOORBELL, 1);
+    mutex_unlock(&rdev->submit_lock);
+
+    req.fence_seqno = seqno;
+    if (copy_to_user(arg, &req, sizeof(req)))
+        return -EFAULT;
+
     return 0;
 }

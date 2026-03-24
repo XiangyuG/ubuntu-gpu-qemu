@@ -14,7 +14,8 @@ static void rvt2_bo_release(struct kref *ref)
     struct rvt2_bo *bo = container_of(ref, struct rvt2_bo, ref);
 
     if (bo->is_hdm) {
-        clear_bit(bo->hdm_page_idx, &bo->rdev->hdm_bitmap);
+        bitmap_clear(bo->rdev->hdm_bitmap, bo->hdm_start_page,
+                     bo->hdm_page_count);
     } else {
         dma_free_coherent(&bo->rdev->pdev->dev, bo->size,
                           bo->cpu_addr, bo->dma_addr);
@@ -123,34 +124,36 @@ int rvt2_bo_create_ioctl(struct rvt2_device *rdev, void __user *arg)
     INIT_LIST_HEAD(&bo->vma_list);
 
     if (req.flags & RVT2_BO_FLAG_HDM) {
-        /* Allocate from BAR2 HDM window */
-        unsigned long pages_needed = req.size >> PAGE_SHIFT;
-        unsigned long idx;
+        unsigned long npages = req.size >> PAGE_SHIFT;
+        unsigned long start;
 
-        if (!rdev->hdm_io || !rdev->hdm_size) {
+        if (!rdev->hdm_io || !rdev->hdm_npages) {
             mutex_destroy(&bo->vma_lock);
             kfree(bo);
             return -ENODEV;
         }
-        if (req.size > rdev->hdm_size) {
+        if (npages > rdev->hdm_npages) {
             mutex_destroy(&bo->vma_lock);
             kfree(bo);
             return -ENOMEM;
         }
 
-        idx = find_first_zero_bit(&rdev->hdm_bitmap, BITS_PER_LONG);
-        if (idx >= rdev->hdm_size >> PAGE_SHIFT) {
+        /* Find contiguous free region in HDM bitmap */
+        start = bitmap_find_next_zero_area(rdev->hdm_bitmap,
+                                           rdev->hdm_npages, 0,
+                                           npages, 0);
+        if (start >= rdev->hdm_npages) {
             mutex_destroy(&bo->vma_lock);
             kfree(bo);
             return -ENOMEM;
         }
-        set_bit(idx, &rdev->hdm_bitmap);
+        bitmap_set(rdev->hdm_bitmap, start, npages);
 
         bo->is_hdm = true;
-        bo->hdm_page_idx = idx;
-        bo->cpu_addr = rdev->hdm_io + (idx << PAGE_SHIFT);
-        bo->dma_addr = rdev->hdm_phys + (idx << PAGE_SHIFT);
-        (void)pages_needed;
+        bo->hdm_start_page = start;
+        bo->hdm_page_count = npages;
+        bo->cpu_addr = rdev->hdm_io + (start << PAGE_SHIFT);
+        bo->dma_addr = rdev->hdm_phys + (start << PAGE_SHIFT);
     } else {
         bo->cpu_addr = dma_alloc_coherent(&rdev->pdev->dev, bo->size,
                                           &bo->dma_addr, GFP_KERNEL);
@@ -165,8 +168,13 @@ int rvt2_bo_create_ioctl(struct rvt2_device *rdev, void __user *arg)
     ret = idr_alloc(&rdev->bo_idr, bo, 1, 0, GFP_KERNEL);
     mutex_unlock(&rdev->bo_lock);
     if (ret < 0) {
-        dma_free_coherent(&rdev->pdev->dev, bo->size,
-                          bo->cpu_addr, bo->dma_addr);
+        if (bo->is_hdm) {
+            bitmap_clear(rdev->hdm_bitmap, bo->hdm_start_page,
+                         bo->hdm_page_count);
+        } else {
+            dma_free_coherent(&rdev->pdev->dev, bo->size,
+                              bo->cpu_addr, bo->dma_addr);
+        }
         mutex_destroy(&bo->vma_lock);
         kfree(bo);
         return ret;

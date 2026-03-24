@@ -113,6 +113,26 @@ int rvt2_submit(rvt2_dev_t *dev, uint32_t bo_a, uint32_t bo_b,
     return 0;
 }
 
+int rvt2_submit_raw(rvt2_dev_t *dev, const void *desc_blob,
+                    uint32_t desc_count, uint64_t *fence_seqno)
+{
+    struct rvt2_submit_raw req = { 0 };
+    int ret;
+
+    if (!dev || !desc_blob || desc_count == 0 || !fence_seqno)
+        return -EINVAL;
+
+    req.desc_addr = (uint64_t)(unsigned long)desc_blob;
+    req.desc_count = desc_count;
+
+    ret = ioctl(dev->fd, RVT2_IOCTL_SUBMIT_RAW, &req);
+    if (ret)
+        return -errno;
+
+    *fence_seqno = req.fence_seqno;
+    return 0;
+}
+
 int rvt2_wait(rvt2_dev_t *dev, uint64_t fence_seqno, int64_t timeout_ns)
 {
     struct rvt2_wait req = { 0 };

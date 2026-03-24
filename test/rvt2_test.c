@@ -8,8 +8,11 @@
 #include <math.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <signal.h>
+#include <setjmp.h>
 #include <sys/ioctl.h>
 #include "../lib/libtmatmulrt/rvt2_lib.h"
+#include "../../include/uapi/rvt2_drm.h"
 
 #define TEST_M 4
 #define TEST_N 4
@@ -83,6 +86,68 @@ static int test_bo_lifecycle(void)
     ret = rvt2_bo_alloc(&dev, 0, 0, &bo);
     CHECK(ret != 0, "rvt2_bo_alloc(0) returns error");
 
+    rvt2_close(&dev);
+    return 0;
+}
+
+/* SIGBUS test for destroy-after-mmap (AC-3 negative) */
+static sigjmp_buf sigbus_jmp;
+
+static void sigbus_handler(int sig)
+{
+    (void)sig;
+    siglongjmp(sigbus_jmp, 1);
+}
+
+static int test_destroy_sigbus(void)
+{
+    rvt2_dev_t dev;
+    rvt2_bo_t bo;
+    int ret;
+    void *ptr;
+    struct sigaction sa, old_sa;
+
+    printf("[Test: BO destroy-after-mmap SIGBUS]\n");
+    ret = rvt2_open(&dev);
+    if (ret) { printf("  FAIL: cannot open device\n"); tests_failed++; return -1; }
+
+    ret = rvt2_bo_alloc(&dev, 4096, 0, &bo);
+    if (ret) { printf("  FAIL: alloc failed\n"); tests_failed++; rvt2_close(&dev); return -1; }
+
+    ptr = rvt2_bo_map(&dev, &bo);
+    if (!ptr) { printf("  FAIL: mmap failed\n"); tests_failed++; rvt2_close(&dev); return -1; }
+
+    /* Write works before destroy */
+    ((volatile unsigned char *)ptr)[0] = 0x42;
+    CHECK(((volatile unsigned char *)ptr)[0] == 0x42, "mmap access works before destroy");
+
+    /* Destroy the BO while mapping is still active */
+    struct rvt2_bo_destroy dreq = { .handle = bo.handle };
+    ret = ioctl(dev.fd, _IOW('R', 0x02, struct rvt2_bo_destroy), &dreq);
+    CHECK(ret == 0, "BO_DESTROY with active mmap succeeds");
+
+    /* Set up SIGBUS handler */
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = sigbus_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGBUS, &sa, &old_sa);
+
+    if (sigsetjmp(sigbus_jmp, 1) == 0) {
+        /* Try to access the destroyed mapping — should trigger SIGBUS */
+        ((volatile unsigned char *)ptr)[0] = 0xFF;
+        /* If we get here, no SIGBUS was raised */
+        CHECK(0, "post-destroy mmap access triggers SIGBUS");
+    } else {
+        /* SIGBUS was caught */
+        CHECK(1, "post-destroy mmap access triggers SIGBUS");
+    }
+
+    sigaction(SIGBUS, &old_sa, NULL);
+
+    /* Don't call rvt2_bo_free since BO is already destroyed */
+    bo.handle = 0;
+    bo.map = NULL;
     rvt2_close(&dev);
     return 0;
 }
@@ -169,6 +234,7 @@ int main(void)
 
     test_open_close();
     test_bo_lifecycle();
+    test_destroy_sigbus();
     test_submit_wait();
 
     printf("\n=== Results: %d passed, %d failed ===\n",

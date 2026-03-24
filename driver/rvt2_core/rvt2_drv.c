@@ -38,6 +38,10 @@ static long rvt2_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
         if (!rdev->fw_ready)
             return -EIO;
         return rvt2_submit_ioctl(rdev, uarg);
+    case RVT2_IOCTL_SUBMIT_RAW:
+        if (!rdev->fw_ready)
+            return -EIO;
+        return rvt2_submit_raw_ioctl(rdev, uarg);
     case RVT2_IOCTL_WAIT:
         return rvt2_wait_ioctl(rdev, uarg);
     default:
@@ -182,10 +186,14 @@ static int rvt2_probe(struct pci_dev *pdev, const struct pci_device_id *id)
     if (rdev->hdm_io) {
         rdev->hdm_phys = pci_resource_start(pdev, 2);
         rdev->hdm_size = pci_resource_len(pdev, 2);
-        rdev->hdm_bitmap = 0;
-        dev_info(&pdev->dev, "HDM window: phys=0x%llx size=%lld\n",
+        rdev->hdm_npages = rdev->hdm_size >> PAGE_SHIFT;
+        rdev->hdm_bitmap = bitmap_zalloc(rdev->hdm_npages, GFP_KERNEL);
+        if (!rdev->hdm_bitmap)
+            return -ENOMEM;
+        dev_info(&pdev->dev, "HDM window: phys=0x%llx size=%lld pages=%lu\n",
                  (unsigned long long)rdev->hdm_phys,
-                 (unsigned long long)rdev->hdm_size);
+                 (unsigned long long)rdev->hdm_size,
+                 rdev->hdm_npages);
     }
 
     /* Verify device identity */
@@ -277,6 +285,7 @@ static void rvt2_remove(struct pci_dev *pdev)
     rvt2_gsp_detach(&rdev->gsp);
     rvt2_irq_fini(rdev);
     idr_destroy(&rdev->bo_idr);
+    bitmap_free(rdev->hdm_bitmap);
 }
 
 static const struct pci_device_id rvt2_pci_ids[] = {
@@ -320,4 +329,3 @@ module_exit(rvt2_exit);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Chao Liu <chao.liu.zevorn@gmail.com>");
 MODULE_DESCRIPTION("RVT2 Ternary MatMul Accelerator driver");
-MODULE_FIRMWARE("rvt2/firmware.bin");

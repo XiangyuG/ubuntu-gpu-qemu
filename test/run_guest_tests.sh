@@ -3,7 +3,7 @@
 # Guest-side validation script for RVT2 accelerator
 # Run this inside the QEMU VM after loading the driver
 #
-set -o pipefail
+set -euo pipefail
 
 PASS=0
 FAIL=0
@@ -65,7 +65,7 @@ log ""
 log "[AC-3/AC-5/AC-6: smoke test]"
 sudo chmod 666 /dev/rvt2_0
 cd /home/ubuntu/test
-make clean all 2>/dev/null 1>/dev/null
+make clean all 2>&1 || { log "  FAIL: build failed"; FAIL=$((FAIL+1)); exit 1; }
 ./rvt2_test 2>&1
 check $? "rvt2_test all tests pass"
 

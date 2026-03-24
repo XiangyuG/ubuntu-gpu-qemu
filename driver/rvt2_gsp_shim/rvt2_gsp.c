@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * RVT2 GSP firmware shim helper entrypoints.
+ * RVT2 GSP firmware shim module (rvt2_gsp_shim.ko)
+ *
+ * Manages firmware loading and mailbox communication. Exports attach/detach
+ * API for rvt2_core.ko to consume via KBUILD_EXTRA_SYMBOLS.
  */
 
 #include <linux/module.h>
@@ -49,7 +52,6 @@ int rvt2_gsp_attach(struct rvt2_gsp_info *info, struct device *dev,
         dev_err(dev, "request_firmware(%s) failed: %d\n", RVT2_FW_NAME, ret);
         return ret;
     }
-
     release_firmware(fw);
 
     ret = rvt2_gsp_mbox_cmd(info, RVT2_MBOX_CMD_INIT);
@@ -77,6 +79,7 @@ int rvt2_gsp_attach(struct rvt2_gsp_info *info, struct device *dev,
 
     return 0;
 }
+EXPORT_SYMBOL_GPL(rvt2_gsp_attach);
 
 void rvt2_gsp_detach(struct rvt2_gsp_info *info)
 {
@@ -86,3 +89,9 @@ void rvt2_gsp_detach(struct rvt2_gsp_info *info)
     cancel_delayed_work_sync(&info->heartbeat_work);
     memset(info, 0, sizeof(*info));
 }
+EXPORT_SYMBOL_GPL(rvt2_gsp_detach);
+
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Chao Liu <chao.liu.zevorn@gmail.com>");
+MODULE_DESCRIPTION("RVT2 GSP Firmware Shim");
+MODULE_FIRMWARE(RVT2_FW_NAME);

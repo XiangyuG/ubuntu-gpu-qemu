@@ -82,7 +82,16 @@ struct rvt2_wait {
     __u32 pad;
 };
 
-#define RVT2_IOCTL_SUBMIT   _IOWR(RVT2_IOCTL_BASE, 0x10, struct rvt2_submit)
-#define RVT2_IOCTL_WAIT     _IOWR(RVT2_IOCTL_BASE, 0x11, struct rvt2_wait)
+/* Raw descriptor submission (for compiledd pipeline) */
+struct rvt2_submit_raw {
+    __u64 desc_addr;        /* in: userspace pointer to descriptor blob */
+    __u32 desc_count;       /* in: number of 64-byte descriptors */
+    __u32 pad;
+    __u64 fence_seqno;      /* out: fence seqno of last descriptor */
+};
+
+#define RVT2_IOCTL_SUBMIT       _IOWR(RVT2_IOCTL_BASE, 0x10, struct rvt2_submit)
+#define RVT2_IOCTL_WAIT         _IOWR(RVT2_IOCTL_BASE, 0x11, struct rvt2_wait)
+#define RVT2_IOCTL_SUBMIT_RAW   _IOWR(RVT2_IOCTL_BASE, 0x12, struct rvt2_submit_raw)
 
 #endif /* _UAPI_RVT2_DRM_H_ */

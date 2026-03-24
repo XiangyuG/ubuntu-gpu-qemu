@@ -73,12 +73,14 @@ struct rvt2_bo {
     dma_addr_t dma_addr;
     bool destroyed;
     bool is_hdm;                    /* allocated from BAR2 HDM window */
-    unsigned long hdm_page_idx;     /* page index within HDM for bitmap tracking */
+    unsigned long hdm_start_page;   /* start page index in HDM */
+    unsigned long hdm_page_count;   /* number of pages allocated */
     struct list_head vma_list;
     struct mutex vma_lock;
 };
 
 struct rvt2_fence_state {
+    struct dma_fence base;
     struct list_head node;
     u64 seqno;
     u32 hw_status;
@@ -92,7 +94,8 @@ struct rvt2_device {
     void __iomem *hdm_io;              /* BAR2: HDM window */
     resource_size_t hdm_phys;          /* BAR2 physical address */
     resource_size_t hdm_size;          /* BAR2 size */
-    unsigned long hdm_bitmap;          /* page allocation bitmap (up to BITS_PER_LONG pages) */
+    unsigned long hdm_npages;          /* total pages in HDM window */
+    unsigned long *hdm_bitmap;         /* page allocation bitmap */
     struct miscdevice miscdev;
     struct device *class_dev;
 
@@ -114,7 +117,8 @@ struct rvt2_device {
     /* Fence tracking */
     u64 next_seqno;
     u64 last_completed_seqno;
-    bool new_completions;
+    atomic_t unread_completions;
+    u64 fence_context;
     spinlock_t fence_lock;
     wait_queue_head_t fence_wq;
     struct list_head fences;
@@ -148,6 +152,7 @@ void rvt2_bo_cleanup(struct rvt2_device *rdev);
 
 /* rvt2_submit.c */
 int rvt2_submit_ioctl(struct rvt2_device *rdev, void __user *arg);
+int rvt2_submit_raw_ioctl(struct rvt2_device *rdev, void __user *arg);
 int rvt2_wait_ioctl(struct rvt2_device *rdev, void __user *arg);
 void rvt2_submit_init(struct rvt2_device *rdev);
 bool rvt2_poll_ready(struct rvt2_device *rdev);

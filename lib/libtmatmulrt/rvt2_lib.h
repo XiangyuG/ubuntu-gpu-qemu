@@ -29,6 +29,9 @@ int rvt2_submit(rvt2_dev_t *dev, uint32_t bo_a, uint32_t bo_b,
                 uint32_t m, uint32_t n, uint32_t k,
                 uint32_t dtype, uint64_t *fence_seqno);
 
+int rvt2_submit_raw(rvt2_dev_t *dev, const void *desc_blob,
+                    uint32_t desc_count, uint64_t *fence_seqno);
+
 int rvt2_wait(rvt2_dev_t *dev, uint64_t fence_seqno, int64_t timeout_ns);
 
 #endif /* _RVT2_LIB_H_ */

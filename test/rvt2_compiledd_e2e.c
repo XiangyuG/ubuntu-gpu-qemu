@@ -2,14 +2,17 @@
 /*
  * RVT2 compiledd end-to-end test (AC-7)
  *
- * Uses compiledd to generate a descriptor, then executes it through the
- * device via libtmatmulrt and verifies the result.
+ * Allocates BOs, generates IR with real DMA addresses, runs compiledd
+ * to produce a descriptor blob, then submits that blob through the
+ * raw descriptor ioctl and verifies the result.
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <unistd.h>
 #include "../lib/libtmatmulrt/rvt2_lib.h"
+#include "../../include/uapi/rvt2_drm.h"
 
 #define M 4
 #define N 4
@@ -36,58 +39,31 @@ int main(void)
     float *a, *b, *c, *d, *d_ref;
     int ret, i;
     int pass = 0, fail = 0;
+    char ir_cmd[512];
+    struct rvt2_descriptor desc_blob;
+    FILE *proc;
 
     printf("=== RVT2 compiledd End-to-End Test ===\n\n");
 
-    /*
-     * Step 1: Verify compiledd can generate a descriptor.
-     * We run compiledd with known addresses (placeholder) to validate
-     * the IR → descriptor translation path.
-     */
-    printf("[Step 1: compiledd IR translation]\n");
-    ret = system("echo 'ternary_matmul 4 4 4 0 1000 2000 3000 4000' | "
-                 "../lib/compiledd/compiledd > /tmp/rvt2_e2e_desc.bin 2>/dev/null");
-    if (ret == 0) {
-        FILE *f = fopen("/tmp/rvt2_e2e_desc.bin", "rb");
-        if (f) {
-            fseek(f, 0, SEEK_END);
-            long sz = ftell(f);
-            fclose(f);
-            if (sz == 64) {
-                printf("  PASS: compiledd produced 64-byte descriptor\n");
-                pass++;
-            } else {
-                printf("  FAIL: descriptor size %ld != 64\n", sz);
-                fail++;
-            }
-        }
-    } else {
-        printf("  FAIL: compiledd execution failed\n");
-        fail++;
-    }
-
-    /*
-     * Step 2: Execute the same operation through the device via runtime.
-     * This proves the complete chain: IR → descriptor → device → result.
-     */
-    printf("[Step 2: device execution via runtime]\n");
+    /* Open device — required for this test */
     ret = rvt2_open(&dev);
     if (ret) {
-        printf("  SKIP: cannot open device (ret=%d)\n", ret);
-        goto done;
+        printf("  FAIL: cannot open device (ret=%d)\n", ret);
+        return 1;
     }
 
+    /* Allocate BOs */
     ret = rvt2_bo_alloc(&dev, M * K * sizeof(float), 0, &bo_a);
     ret |= rvt2_bo_alloc(&dev, K * N * sizeof(float), 0, &bo_b);
     ret |= rvt2_bo_alloc(&dev, M * N * sizeof(float), 0, &bo_c);
     ret |= rvt2_bo_alloc(&dev, M * N * sizeof(float), 0, &bo_d);
     if (ret) {
         printf("  FAIL: BO allocation failed\n");
-        fail++;
         rvt2_close(&dev);
-        goto done;
+        return 1;
     }
 
+    /* Fill input data */
     a = rvt2_bo_map(&dev, &bo_a);
     b = rvt2_bo_map(&dev, &bo_b);
     c = rvt2_bo_map(&dev, &bo_c);
@@ -98,48 +74,82 @@ int main(void)
     for (i = 0; i < M * N; i++) c[i] = 1.0f;
     memset(d, 0, M * N * sizeof(float));
 
-    /* Submit with same dimensions as compiledd IR */
-    ret = rvt2_submit(&dev, bo_a.handle, bo_b.handle,
-                      bo_c.handle, bo_d.handle, M, N, K, 0, &seqno);
-    if (ret) {
-        printf("  FAIL: submit failed (ret=%d)\n", ret);
+    /*
+     * Step 1: Generate IR with REAL DMA addresses from the BOs,
+     * pipe through compiledd, read back the binary descriptor.
+     */
+    printf("[Step 1: compiledd IR → descriptor with real DMA addresses]\n");
+    snprintf(ir_cmd, sizeof(ir_cmd),
+             "echo 'ternary_matmul %d %d %d 0 %lx %lx %lx %lx' | "
+             "../lib/compiledd/compiledd",
+             M, N, K,
+             (unsigned long)bo_a.dma_addr, (unsigned long)bo_b.dma_addr,
+             (unsigned long)bo_c.dma_addr, (unsigned long)bo_d.dma_addr);
+
+    proc = popen(ir_cmd, "r");
+    if (!proc) {
+        printf("  FAIL: popen compiledd failed\n");
         fail++;
-    } else {
-        ret = rvt2_wait(&dev, seqno, 5000000000LL);
-        if (ret) {
-            printf("  FAIL: wait failed (ret=%d)\n", ret);
-            fail++;
-        } else {
-            d_ref = malloc(M * N * sizeof(float));
-            ref_matmul(a, b, c, d_ref, M, N, K);
-            int correct = 1;
-            for (i = 0; i < M * N; i++) {
-                if (fabsf(d[i] - d_ref[i]) > EPSILON) {
-                    printf("  MISMATCH at [%d]: got %f expected %f\n",
-                           i, d[i], d_ref[i]);
-                    correct = 0;
-                    break;
-                }
-            }
-            if (correct) {
-                printf("  PASS: D=A*B+C result matches reference (compiledd dimensions)\n");
-                pass++;
-            } else {
-                printf("  FAIL: result mismatch\n");
-                fail++;
-            }
-            free(d_ref);
-        }
+        goto cleanup;
     }
 
+    size_t nread = fread(&desc_blob, 1, sizeof(desc_blob), proc);
+    int pstat = pclose(proc);
+    if (pstat != 0 || nread != sizeof(desc_blob)) {
+        printf("  FAIL: compiledd returned error or wrong size (%zu bytes)\n", nread);
+        fail++;
+        goto cleanup;
+    }
+    printf("  PASS: compiledd produced 64-byte descriptor with real DMA addrs\n");
+    pass++;
+
+    /*
+     * Step 2: Submit the compiledd-generated descriptor blob through
+     * the raw descriptor ioctl — this is the TRUE e2e path.
+     */
+    printf("[Step 2: submit compiledd descriptor through raw ioctl]\n");
+    ret = rvt2_submit_raw(&dev, &desc_blob, 1, &seqno);
+    if (ret) {
+        printf("  FAIL: rvt2_submit_raw failed (ret=%d)\n", ret);
+        fail++;
+        goto cleanup;
+    }
+
+    ret = rvt2_wait(&dev, seqno, 5000000000LL);
+    if (ret) {
+        printf("  FAIL: rvt2_wait failed (ret=%d)\n", ret);
+        fail++;
+        goto cleanup;
+    }
+
+    /* Verify result */
+    d_ref = malloc(M * N * sizeof(float));
+    ref_matmul(a, b, c, d_ref, M, N, K);
+    int correct = 1;
+    for (i = 0; i < M * N; i++) {
+        if (fabsf(d[i] - d_ref[i]) > EPSILON) {
+            printf("  MISMATCH at [%d]: got %f expected %f\n",
+                   i, d[i], d_ref[i]);
+            correct = 0;
+            break;
+        }
+    }
+    if (correct) {
+        printf("  PASS: D=A*B+C via compiledd raw descriptor matches reference\n");
+        pass++;
+    } else {
+        printf("  FAIL: result mismatch\n");
+        fail++;
+    }
+    free(d_ref);
+
+cleanup:
     rvt2_bo_free(&dev, &bo_a);
     rvt2_bo_free(&dev, &bo_b);
     rvt2_bo_free(&dev, &bo_c);
     rvt2_bo_free(&dev, &bo_d);
     rvt2_close(&dev);
 
-done:
-    unlink("/tmp/rvt2_e2e_desc.bin");
     printf("\n=== Results: %d passed, %d failed ===\n", pass, fail);
     return fail ? 1 : 0;
 }
