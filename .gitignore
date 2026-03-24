@@ -23,6 +23,7 @@ lib/libtmatmulrt/*.so
 test/rvt2_test
 test/rvt2_bench
 test/rvt2_cxl_test
+test/rvt2_compiledd_e2e
 
 # Humanize local loop state
 .humanize/rlcr/
