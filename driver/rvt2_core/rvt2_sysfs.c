@@ -8,9 +8,10 @@ static ssize_t status_show(struct device *dev,
     struct rvt2_device *rdev = dev_get_drvdata(dev);
     u32 status = rvt2_read(rdev, RVT2_REG_STATUS);
 
-    if (status & RVT2_STATUS_ERROR)
+    /* Check both HW status and driver-side GSP fault state */
+    if ((status & RVT2_STATUS_ERROR) || !rdev->gsp.ready)
         return sysfs_emit(buf, "ERROR\n");
-    if (status & RVT2_STATUS_READY)
+    if ((status & RVT2_STATUS_READY) && rdev->fw_ready)
         return sysfs_emit(buf, "OK\n");
     return sysfs_emit(buf, "INIT\n");
 }

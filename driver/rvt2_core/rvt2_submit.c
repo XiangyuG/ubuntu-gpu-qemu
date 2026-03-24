@@ -240,6 +240,7 @@ int rvt2_wait_ioctl(struct rvt2_device *rdev, void __user *arg)
             fence->consumed = true;
             atomic_dec(&rdev->unread_completions);
         }
+        rvt2_gc_fences_locked(rdev);
         spin_unlock(&rdev->fence_lock);
         req.status = hw_status ? 2 : 0;
         goto out;
@@ -296,12 +297,13 @@ out:
 int rvt2_submit_raw_ioctl(struct rvt2_device *rdev, void __user *arg)
 {
     struct rvt2_submit_raw req;
-    struct rvt2_descriptor user_desc;
-    struct rvt2_fence_state *fence;
-    struct rvt2_descriptor *desc;
+    struct rvt2_descriptor *descs = NULL;
+    struct rvt2_fence_state **fences = NULL;
+    struct rvt2_descriptor *slot;
     u64 seqno = 0;
-    u32 head, next_tail, status, i;
+    u32 head, avail, status, i, tail_save;
     void __user *blob;
+    int ret = 0;
 
     if (copy_from_user(&req, arg, sizeof(req)))
         return -EFAULT;
@@ -316,56 +318,83 @@ int rvt2_submit_raw_ioctl(struct rvt2_device *rdev, void __user *arg)
 
     blob = (void __user *)(unsigned long)req.desc_addr;
 
+    /* Phase 1: Copy all descriptors from userspace */
+    descs = kmalloc_array(req.desc_count, RVT2_DESC_SIZE, GFP_KERNEL);
+    if (!descs)
+        return -ENOMEM;
+    if (copy_from_user(descs, blob, req.desc_count * RVT2_DESC_SIZE)) {
+        ret = -EFAULT;
+        goto err_free_descs;
+    }
+
+    /* Phase 2: Pre-allocate all fences */
+    fences = kmalloc_array(req.desc_count, sizeof(*fences), GFP_KERNEL);
+    if (!fences) {
+        ret = -ENOMEM;
+        goto err_free_descs;
+    }
+    for (i = 0; i < req.desc_count; i++) {
+        fences[i] = kzalloc(sizeof(*fences[i]), GFP_KERNEL);
+        if (!fences[i]) {
+            ret = -ENOMEM;
+            goto err_free_fences;
+        }
+    }
+
     mutex_lock(&rdev->submit_lock);
 
+    /* Phase 3: Check ring has enough space for entire chain */
     spin_lock(&rdev->fence_lock);
     rvt2_gc_fences_locked(rdev);
     spin_unlock(&rdev->fence_lock);
 
-    for (i = 0; i < req.desc_count; i++) {
-        if (copy_from_user(&user_desc, blob + i * RVT2_DESC_SIZE,
-                           sizeof(user_desc))) {
-            mutex_unlock(&rdev->submit_lock);
-            return -EFAULT;
-        }
+    head = rvt2_read(rdev, RVT2_REG_CMDQ_HEAD) % RVT2_CMDQ_ENTRIES;
+    if (head <= rdev->cmdq_tail)
+        avail = RVT2_CMDQ_ENTRIES - 1 - rdev->cmdq_tail + head;
+    else
+        avail = head - rdev->cmdq_tail - 1;
 
-        head = rvt2_read(rdev, RVT2_REG_CMDQ_HEAD) % RVT2_CMDQ_ENTRIES;
-        next_tail = (rdev->cmdq_tail + 1) % RVT2_CMDQ_ENTRIES;
-        if (next_tail == head) {
-            mutex_unlock(&rdev->submit_lock);
-            return -EBUSY;
-        }
-
-        fence = kzalloc(sizeof(*fence), GFP_KERNEL);
-        if (!fence) {
-            mutex_unlock(&rdev->submit_lock);
-            return -ENOMEM;
-        }
-
-        spin_lock(&rdev->fence_lock);
-        seqno = rdev->next_seqno++;
-        fence->seqno = seqno;
-        dma_fence_init(&fence->base, &rvt2_fence_ops, &rdev->fence_lock,
-                       rdev->fence_context, seqno);
-        list_add_tail(&fence->node, &rdev->fences);
-        spin_unlock(&rdev->fence_lock);
-
-        /* Copy user descriptor into cmdq, overwrite fence_seqno */
-        desc = rdev->cmdq_cpu + (rdev->cmdq_tail % RVT2_CMDQ_ENTRIES) * RVT2_DESC_SIZE;
-        memcpy(desc, &user_desc, RVT2_DESC_SIZE);
-        desc->fence_seqno = seqno;
-
-        rdev->cmdq_tail = next_tail;
-        rvt2_write(rdev, RVT2_REG_CMDQ_TAIL, rdev->cmdq_tail);
+    if (req.desc_count > avail) {
+        mutex_unlock(&rdev->submit_lock);
+        ret = -EBUSY;
+        goto err_free_fences;
     }
 
+    /* Phase 4: All checks passed — batch enqueue (no failure possible) */
+    tail_save = rdev->cmdq_tail;
+    spin_lock(&rdev->fence_lock);
+    for (i = 0; i < req.desc_count; i++) {
+        seqno = rdev->next_seqno++;
+        fences[i]->seqno = seqno;
+        dma_fence_init(&fences[i]->base, &rvt2_fence_ops, &rdev->fence_lock,
+                       rdev->fence_context, seqno);
+        list_add_tail(&fences[i]->node, &rdev->fences);
+
+        slot = rdev->cmdq_cpu + (rdev->cmdq_tail % RVT2_CMDQ_ENTRIES) * RVT2_DESC_SIZE;
+        memcpy(slot, &descs[i], RVT2_DESC_SIZE);
+        slot->fence_seqno = seqno;
+        rdev->cmdq_tail = (rdev->cmdq_tail + 1) % RVT2_CMDQ_ENTRIES;
+    }
+    spin_unlock(&rdev->fence_lock);
+
+    rvt2_write(rdev, RVT2_REG_CMDQ_TAIL, rdev->cmdq_tail);
     wmb();
     rvt2_write(rdev, RVT2_REG_DOORBELL, 1);
     mutex_unlock(&rdev->submit_lock);
 
+    kfree(fences);
+    kfree(descs);
+
     req.fence_seqno = seqno;
     if (copy_to_user(arg, &req, sizeof(req)))
         return -EFAULT;
-
     return 0;
+
+err_free_fences:
+    for (i = 0; i < req.desc_count; i++)
+        kfree(fences[i]);
+    kfree(fences);
+err_free_descs:
+    kfree(descs);
+    return ret;
 }
