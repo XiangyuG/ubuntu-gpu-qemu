@@ -55,6 +55,18 @@ chmod 600 vm-credentials.conf
 ./start-riscv64.sh
 ```
 
+To boot the VM with a locally built kernel instead of the Ubuntu kernel in the
+image, use:
+
+```bash
+ROOTDEV=/dev/vda1 ./start-riscv64-local-kernel.sh
+```
+
+The local-kernel launcher expects the kernel image at
+`/mnt/disk2/linux/out-rv64/arch/riscv/boot/Image`. If your image uses a
+different root partition, adjust `ROOTDEV` after checking the raw Ubuntu image
+with `fdisk -l ubuntu-24.04.4-preinstalled-server-riscv64.img`.
+
 ### 3. Connect
 
 ```bash
@@ -68,6 +80,7 @@ chmod 600 vm-credentials.conf
 | Script | Description |
 |--------|-------------|
 | `start-riscv64.sh` | Launch QEMU VM (serial console, `-nographic`) |
+| `start-riscv64-local-kernel.sh` | Launch QEMU VM with a locally built RISC-V kernel |
 | `vm-ssh.sh` | SSH interaction: `shell`, `exec`, `push`, `pull`, `setup-key`, `wait` |
 | `user-data` | cloud-init config for setting VM password |
 
