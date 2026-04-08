@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <linux/uaccess.h>
 #include <linux/sched.h>
+#include <linux/jiffies.h>
 #include <linux/poll.h>
 #include <linux/slab.h>
 #include <linux/dma-fence.h>
@@ -254,6 +255,41 @@ int rvt2_wait_ioctl(struct rvt2_device *rdev, void __user *arg)
 
     timeout_jiffies = (req.timeout_ns < 0) ? MAX_SCHEDULE_TIMEOUT
                                             : nsecs_to_jiffies(req.timeout_ns);
+
+    if (rdev->irq_vecs <= 0) {
+        unsigned long deadline = 0;
+
+        if (req.timeout_ns >= 0)
+            deadline = jiffies + timeout_jiffies;
+
+        for (;;) {
+            rvt2_harvest_completions(rdev);
+
+            spin_lock(&rdev->fence_lock);
+            fence = rvt2_find_fence_locked(rdev, req.fence_seqno);
+            if (fence && fence->completed) {
+                hw_status = fence->hw_status;
+                if (!fence->consumed) {
+                    fence->consumed = true;
+                    atomic_dec(&rdev->unread_completions);
+                }
+                rvt2_gc_fences_locked(rdev);
+                spin_unlock(&rdev->fence_lock);
+                req.status = hw_status ? 2 : 0;
+                goto out;
+            }
+            spin_unlock(&rdev->fence_lock);
+
+            if (req.timeout_ns >= 0 && time_after_eq(jiffies, deadline)) {
+                req.status = 1;
+                goto out;
+            }
+            if (signal_pending(current))
+                return -ERESTARTSYS;
+
+            schedule_timeout_interruptible(msecs_to_jiffies(1));
+        }
+    }
 
     ret = wait_event_interruptible_timeout(rdev->fence_wq,
         ({

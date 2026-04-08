@@ -3,6 +3,10 @@
 #include <linux/pci.h>
 #include "rvt2_drv.h"
 
+#ifndef PCI_IRQ_INTX
+#define PCI_IRQ_INTX PCI_IRQ_LEGACY
+#endif
+
 static irqreturn_t rvt2_irq_handler(int irq, void *data)
 {
     struct rvt2_device *rdev = data;
@@ -30,10 +34,14 @@ int rvt2_irq_init(struct rvt2_device *rdev)
     nvec = pci_alloc_irq_vectors(rdev->pdev, 1, 2,
                                  PCI_IRQ_MSIX | PCI_IRQ_MSI | PCI_IRQ_INTX);
     if (nvec < 0) {
-        dev_err(&rdev->pdev->dev,
-                "pci_alloc_irq_vectors failed: %d\n", nvec);
-        return nvec;
+        dev_warn(&rdev->pdev->dev,
+                 "pci_alloc_irq_vectors failed: %d, falling back to polling\n",
+                 nvec);
+        rdev->irq_vecs = 0;
+        rvt2_write(rdev, RVT2_REG_IRQ_MASK, 0xFFFFFFFF);
+        return 0;
     }
+    rdev->irq_vecs = nvec;
     dev_info(&rdev->pdev->dev, "allocated %d IRQ vectors\n", nvec);
 
     ret = request_irq(pci_irq_vector(rdev->pdev, 0), rvt2_irq_handler,
@@ -62,12 +70,13 @@ err_free:
 
 void rvt2_irq_fini(struct rvt2_device *rdev)
 {
-    int nvec = pci_msix_vec_count(rdev->pdev);
-
     rvt2_write(rdev, RVT2_REG_IRQ_MASK, 0xFFFFFFFF);
 
+    if (rdev->irq_vecs <= 0)
+        return;
+
     free_irq(pci_irq_vector(rdev->pdev, 0), rdev);
-    if (nvec >= 2)
+    if (rdev->irq_vecs >= 2)
         free_irq(pci_irq_vector(rdev->pdev, 1), rdev);
 
     pci_free_irq_vectors(rdev->pdev);

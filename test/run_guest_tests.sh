@@ -34,7 +34,7 @@ lspci_out=$(lspci -s 00:01.0 2>&1)
 echo "$lspci_out" | grep -q "1234:1de2"
 check $? "lspci shows vendor 0x1234 device 0x1de2"
 
-lspci -vvv -s 00:01.0 2>&1 | grep -q "MSI-X: Enable"
+sudo lspci -vvv -s 00:01.0 2>&1 | grep -q "MSI-X:"
 check $([ $? -eq 0 ] && echo 0 || echo 1) "MSI-X capability present (may not be enabled yet)"
 
 lspci -v -s 00:01.0 2>&1 | grep -q "prefetchable"
@@ -63,6 +63,7 @@ check $? "lspci -k shows rvt2_core driver"
 # AC-2 negative: unknown ioctl returns ENOTTY
 echo ""
 echo "[AC-2 negative tests]"
+sudo chmod 666 /dev/rvt2_0
 python3 -c "
 import fcntl, os, sys
 fd = os.open('/dev/rvt2_0', os.O_RDWR)

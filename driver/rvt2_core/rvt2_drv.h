@@ -117,6 +117,7 @@ struct rvt2_device {
     /* Fence tracking */
     u64 next_seqno;
     u64 last_completed_seqno;
+    int irq_vecs;
     atomic_t unread_completions;
     u64 fence_context;
     spinlock_t fence_lock;
