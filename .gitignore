@@ -18,12 +18,24 @@ qemu/build/
 
 # Local build artifacts
 lib/compiledd/compiledd
+lib/compiledd/compilerd
+lib/compiledd/*.o
 lib/libtmatmulrt/*.o
 lib/libtmatmulrt/*.so
 test/rvt2_test
 test/rvt2_bench
 test/rvt2_cxl_test
 test/rvt2_compiledd_e2e
+
+# Out-of-tree kernel module build artifacts
+driver/**/*.ko
+driver/**/*.mod
+driver/**/*.mod.c
+driver/**/*.o
+driver/**/.*.cmd
+driver/**/.*.o.d
+driver/**/Module.symvers
+driver/**/modules.order
 
 # Humanize local loop state
 .humanize/rlcr/

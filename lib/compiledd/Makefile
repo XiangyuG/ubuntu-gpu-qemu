@@ -1,13 +1,19 @@
 # SPDX-License-Identifier: MIT
 CC ?= gcc
-CFLAGS := -Wall -Wextra -O2
+CFLAGS := -D_GNU_SOURCE -Wall -Wextra -O2
 
-all: compiledd
+all: compiledd compilerd
 
-compiledd: compiledd.c
-	$(CC) $(CFLAGS) -o $@ $<
+compiledd: compiledd.o rvt2_compile.o
+	$(CC) $(CFLAGS) -o $@ $^
+
+compilerd: compilerd.o rvt2_compile.o
+	$(CC) $(CFLAGS) -o $@ $^
+
+%.o: %.c rvt2_compile.h
+	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f compiledd
+	rm -f compiledd compilerd *.o
 
 .PHONY: all clean

@@ -125,6 +125,9 @@ echo "[AC-7: compiledd end-to-end]"
 bash test_compiledd.sh 2>&1
 check $? "compiledd standalone tests pass"
 
+bash test_compilerd.sh 2>&1
+check $? "compilerd service tests pass"
+
 ./rvt2_compiledd_e2e 2>&1
 check $? "compiledd end-to-end through device passes"
 
